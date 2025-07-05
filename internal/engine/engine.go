@@ -11,6 +11,7 @@ import (
 
 	"github.com/esgi-git/postgres-engine/internal/execution"
 	"github.com/esgi-git/postgres-engine/internal/index"
+	"github.com/esgi-git/postgres-engine/internal/parser"
 	"github.com/esgi-git/postgres-engine/internal/storage"
 	"github.com/esgi-git/postgres-engine/internal/transaction"
 	"github.com/esgi-git/postgres-engine/internal/types"
@@ -1068,4 +1069,415 @@ func (pe *PostgresEngine) Query(query *types.QueryPlan) ([]*types.Tuple, error) 
 	}
 
 	return results, nil
+}
+
+// ==================== SQL Parser Integration ====================
+
+// ExecuteSQL parses and executes a SQL statement
+func (pe *PostgresEngine) ExecuteSQL(sql string) (*SQLResult, error) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+
+	// Parse the SQL statement
+	sqlParser := parser.NewParser(sql)
+	sqlStmt, err := sqlParser.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("SQL parse error: %w", err)
+	}
+
+	if len(sqlStmt.Statements) == 0 {
+		return &SQLResult{Message: "No statements to execute"}, nil
+	}
+
+	var results []*SQLResult
+	for _, stmt := range sqlStmt.Statements {
+		result, err := pe.executeStatement(stmt)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+
+	// Return the last result for single statements, or combine results
+	if len(results) == 1 {
+		return results[0], nil
+	}
+
+	// For multiple statements, combine results
+	combinedResult := &SQLResult{
+		Message: fmt.Sprintf("Executed %d statements successfully", len(results)),
+	}
+	
+	// If the last statement was a SELECT, return its data
+	if len(results) > 0 && results[len(results)-1].Data != nil {
+		combinedResult.Data = results[len(results)-1].Data
+		combinedResult.Columns = results[len(results)-1].Columns
+	}
+
+	return combinedResult, nil
+}
+
+// SQLResult represents the result of SQL execution
+type SQLResult struct {
+	Data       []map[string]any `json:"data,omitempty"`       // For SELECT statements
+	Columns    []string         `json:"columns,omitempty"`    // Column names for SELECT
+	RowsAffected int64          `json:"rows_affected"`        // For INSERT/UPDATE/DELETE
+	Message    string           `json:"message,omitempty"`    // Success/info messages
+}
+
+// executeStatement executes a single parsed statement
+func (pe *PostgresEngine) executeStatement(stmt parser.Statement) (*SQLResult, error) {
+	switch s := stmt.(type) {
+	case *parser.CreateDatabaseStatement:
+		return pe.executeCreateDatabase(s)
+	case *parser.DropDatabaseStatement:
+		return pe.executeDropDatabase(s)
+	case *parser.CreateTableStatement:
+		return pe.executeCreateTable(s)
+	case *parser.DropTableStatement:
+		return pe.executeDropTable(s)
+	case *parser.CreateIndexStatement:
+		return pe.executeCreateIndex(s)
+	case *parser.DropIndexStatement:
+		return pe.executeDropIndex(s)
+	case *parser.SelectStatement:
+		return pe.executeSelect(s)
+	case *parser.InsertStatement:
+		return pe.executeInsert(s)
+	case *parser.UpdateStatement:
+		return pe.executeUpdate(s)
+	case *parser.DeleteStatement:
+		return pe.executeDelete(s)
+	default:
+		return nil, fmt.Errorf("unsupported statement type: %T", stmt)
+	}
+}
+
+// ==================== DDL Statement Execution ====================
+
+func (pe *PostgresEngine) executeCreateDatabase(stmt *parser.CreateDatabaseStatement) (*SQLResult, error) {
+	err := pe.CreateDatabase(stmt.Name)
+	if err != nil {
+		return nil, err
+	}
+	return &SQLResult{
+		Message: fmt.Sprintf("Database '%s' created successfully", stmt.Name),
+	}, nil
+}
+
+func (pe *PostgresEngine) executeDropDatabase(stmt *parser.DropDatabaseStatement) (*SQLResult, error) {
+	err := pe.DropDatabase(stmt.Name)
+	if err != nil {
+		return nil, err
+	}
+	return &SQLResult{
+		Message: fmt.Sprintf("Database '%s' dropped successfully", stmt.Name),
+	}, nil
+}
+
+func (pe *PostgresEngine) executeCreateTable(stmt *parser.CreateTableStatement) (*SQLResult, error) {
+	// Convert AST to internal schema
+	schema := types.Schema{
+		Columns:     make([]types.Column, len(stmt.Columns)),
+		Constraints: make([]types.Constraint, len(stmt.Constraints)),
+	}
+
+	// Convert columns
+	for i, colDef := range stmt.Columns {
+		schema.Columns[i] = parser.ConvertColumnDefinition(colDef)
+	}
+
+	// Convert constraints
+	for i, constraintDef := range stmt.Constraints {
+		schema.Constraints[i] = parser.ConvertConstraintDefinition(constraintDef)
+	}
+
+	err := pe.CreateTable(stmt.Name, schema)
+	if err != nil {
+		return nil, err
+	}
+
+	// Table created successfully
+	// Note: Constraints are handled during table creation
+
+	// Process constraints
+	for _, constraintDef := range stmt.Constraints {
+		switch constraintDef.Type {
+		case "PRIMARY KEY":
+			err = pe.AddPrimaryKey(stmt.Name, constraintDef.Columns)
+		case "FOREIGN KEY":
+			err = pe.AddForeignKey(stmt.Name, constraintDef.Columns, 
+				constraintDef.RefTable, constraintDef.RefColumns,
+				constraintDef.OnDelete, constraintDef.OnUpdate)
+		case "UNIQUE":
+			err = pe.AddUniqueConstraint(stmt.Name, constraintDef.Columns)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to add constraint: %w", err)
+		}
+	}
+
+	return &SQLResult{
+		Message: fmt.Sprintf("Table '%s' created successfully", stmt.Name),
+	}, nil
+}
+
+func (pe *PostgresEngine) executeDropTable(stmt *parser.DropTableStatement) (*SQLResult, error) {
+	err := pe.DropTable(stmt.Name)
+	if err != nil {
+		return nil, err
+	}
+	return &SQLResult{
+		Message: fmt.Sprintf("Table '%s' dropped successfully", stmt.Name),
+	}, nil
+}
+
+func (pe *PostgresEngine) executeCreateIndex(stmt *parser.CreateIndexStatement) (*SQLResult, error) {
+	err := pe.CreateIndex(stmt.Name, stmt.Table, stmt.Columns)
+	if err != nil {
+		return nil, err
+	}
+	
+	indexType := "INDEX"
+	if stmt.Unique {
+		indexType = "UNIQUE INDEX"
+	}
+	
+	return &SQLResult{
+		Message: fmt.Sprintf("%s '%s' created successfully", indexType, stmt.Name),
+	}, nil
+}
+
+func (pe *PostgresEngine) executeDropIndex(stmt *parser.DropIndexStatement) (*SQLResult, error) {
+	err := pe.DropIndex(stmt.Name)
+	if err != nil {
+		return nil, err
+	}
+	return &SQLResult{
+		Message: fmt.Sprintf("Index '%s' dropped successfully", stmt.Name),
+	}, nil
+}
+
+// ==================== DML Statement Execution ====================
+
+func (pe *PostgresEngine) executeSelect(stmt *parser.SelectStatement) (*SQLResult, error) {
+	// For now, implement basic SELECT FROM table WHERE conditions
+	if stmt.From == nil {
+		return nil, fmt.Errorf("SELECT without FROM clause not supported")
+	}
+
+	tableName := stmt.From.Table
+	
+	// Build filter from WHERE clause
+	var filter map[string]any
+	if stmt.Where != nil {
+		var err error
+		filter, err = pe.parseWhereCondition(stmt.Where)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse WHERE condition: %w", err)
+		}
+	}
+
+	// Execute the select
+	tuples, err := pe.Select(tableName, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get table schema for column names
+	table, err := pe.GetTable(tableName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert tuples to result format
+	var columns []string
+	if len(stmt.Columns) == 1 {
+		if ident, ok := stmt.Columns[0].(*parser.Identifier); ok && ident.Value == "*" {
+			// SELECT * - use all columns
+			for _, col := range table.Schema.Columns {
+				columns = append(columns, col.Name)
+			}
+		}
+	} else {
+		// Specific columns requested
+		for _, colExpr := range stmt.Columns {
+			if ident, ok := colExpr.(*parser.Identifier); ok {
+				columns = append(columns, ident.Value)
+			}
+		}
+	}
+
+	var data []map[string]any
+	for _, tuple := range tuples {
+		rowData := pe.deserializeDataWithSchema(tuple.Data, tableName)
+		
+		// Filter columns if not SELECT *
+		if len(columns) > 0 {
+			filteredData := make(map[string]any)
+			for _, col := range columns {
+				if value, exists := rowData[col]; exists {
+					filteredData[col] = value
+				}
+			}
+			data = append(data, filteredData)
+		} else {
+			data = append(data, rowData)
+		}
+	}
+
+	return &SQLResult{
+		Data:         data,
+		Columns:      columns,
+		RowsAffected: int64(len(data)),
+		Message:      fmt.Sprintf("Selected %d rows", len(data)),
+	}, nil
+}
+
+func (pe *PostgresEngine) executeInsert(stmt *parser.InsertStatement) (*SQLResult, error) {
+	if len(stmt.Values) == 0 {
+		return nil, fmt.Errorf("no values to insert")
+	}
+
+	var rowsAffected int64
+	for _, valueRow := range stmt.Values {
+		// Build data map
+		data := make(map[string]any)
+		
+		if len(stmt.Columns) > 0 {
+			// Column names provided
+			if len(stmt.Columns) != len(valueRow) {
+				return nil, fmt.Errorf("column count doesn't match value count")
+			}
+			
+			for i, col := range stmt.Columns {
+				value, err := pe.evaluateExpression(valueRow[i])
+				if err != nil {
+					return nil, fmt.Errorf("failed to evaluate value: %w", err)
+				}
+				data[col] = value
+			}
+		} else {
+			// No column names, use table schema order
+			table, err := pe.GetTable(stmt.Table)
+			if err != nil {
+				return nil, err
+			}
+			
+			if len(table.Schema.Columns) != len(valueRow) {
+				return nil, fmt.Errorf("value count doesn't match table column count")
+			}
+			
+			for i, col := range table.Schema.Columns {
+				value, err := pe.evaluateExpression(valueRow[i])
+				if err != nil {
+					return nil, fmt.Errorf("failed to evaluate value: %w", err)
+				}
+				data[col.Name] = value
+			}
+		}
+
+		err := pe.Insert(stmt.Table, data)
+		if err != nil {
+			return nil, err
+		}
+		rowsAffected++
+	}
+
+	return &SQLResult{
+		RowsAffected: rowsAffected,
+		Message:      fmt.Sprintf("Inserted %d rows", rowsAffected),
+	}, nil
+}
+
+func (pe *PostgresEngine) executeUpdate(stmt *parser.UpdateStatement) (*SQLResult, error) {
+	// Build updates map
+	updates := make(map[string]any)
+	for _, assignment := range stmt.Assignments {
+		value, err := pe.evaluateExpression(assignment.Value)
+		if err != nil {
+			return nil, fmt.Errorf("failed to evaluate assignment value: %w", err)
+		}
+		updates[assignment.Column] = value
+	}
+
+	// Build filter from WHERE clause
+	var filter map[string]any
+	if stmt.Where != nil {
+		var err error
+		filter, err = pe.parseWhereCondition(stmt.Where)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse WHERE condition: %w", err)
+		}
+	}
+
+	rowsAffected, err := pe.Update(stmt.Table, filter, updates)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SQLResult{
+		RowsAffected: rowsAffected,
+		Message:      fmt.Sprintf("Updated %d rows", rowsAffected),
+	}, nil
+}
+
+func (pe *PostgresEngine) executeDelete(stmt *parser.DeleteStatement) (*SQLResult, error) {
+	// Build filter from WHERE clause
+	var filter map[string]any
+	if stmt.Where != nil {
+		var err error
+		filter, err = pe.parseWhereCondition(stmt.Where)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse WHERE condition: %w", err)
+		}
+	}
+
+	rowsAffected, err := pe.Delete(stmt.Table, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SQLResult{
+		RowsAffected: rowsAffected,
+		Message:      fmt.Sprintf("Deleted %d rows", rowsAffected),
+	}, nil
+}
+
+// ==================== Helper Functions ====================
+
+// parseWhereCondition converts a WHERE expression to a filter map (simplified)
+func (pe *PostgresEngine) parseWhereCondition(expr parser.Expression) (map[string]any, error) {
+	filter := make(map[string]any)
+	
+	// Handle simple binary expressions like column = value
+	if binExpr, ok := expr.(*parser.BinaryExpression); ok {
+		if binExpr.Operator == "=" {
+			if leftIdent, ok := binExpr.Left.(*parser.Identifier); ok {
+				rightValue, err := pe.evaluateExpression(binExpr.Right)
+				if err != nil {
+					return nil, err
+				}
+				filter[leftIdent.Value] = rightValue
+				return filter, nil
+			}
+		}
+	}
+	
+	// For complex conditions, we'd need a more sophisticated approach
+	// For now, return empty filter (which means no filtering)
+	return nil, nil
+}
+
+// evaluateExpression evaluates an expression to a concrete value
+func (pe *PostgresEngine) evaluateExpression(expr parser.Expression) (any, error) {
+	switch e := expr.(type) {
+	case *parser.Literal:
+		return e.Value, nil
+	case *parser.Identifier:
+		// For now, identifiers in values context are not supported
+		return nil, fmt.Errorf("identifiers in value context not supported")
+	default:
+		return nil, fmt.Errorf("unsupported expression type: %T", expr)
+	}
 }

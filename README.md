@@ -2,9 +2,16 @@
 
 ## 🎯 Aperçu du projet
 
-Ce projet implémente un **database engine** compatible PostgreSQL développé en Go. Il fournit un **RDBMS** (Relational Database Management System) complet avec stockage, transactions, indexation et contraintes d'intégrité référentielle.
+Ce projet implémente un **database engine** compatible PostgreSQL développé en Go. Il fournit un **RDBMS** (Relational Database Management System) complet avec **SQL parser**, stockage, transactions, indexation et contraintes d'intégrité référentielle.
 
 ## ✨ Fonctionnalités principales
+
+### 🔤 SQL Parser
+- **Lexer** complet avec tokenisation SQL
+- **Parser** supportant DDL et DML
+- **AST** (Abstract Syntax Tree) pour représentation des requêtes
+- **Intégration** transparente avec l'engine
+- **Gestion d'erreurs** détaillée avec position des erreurs
 
 ### 🗄️ Database Management
 - Création et suppression de databases
@@ -51,6 +58,11 @@ postgres-engine/
 ├── internal/
 │   ├── engine/               # Core database engine
 │   │   └── engine.go         # Engine configuration & initialization
+│   ├── parser/               # SQL Parser subsystem
+│   │   ├── tokens.go         # SQL token definitions
+│   │   ├── lexer.go          # SQL lexical analyzer
+│   │   ├── ast.go            # Abstract Syntax Tree definitions
+│   │   └── parser.go         # SQL parser implementation
 │   ├── execution/            # Query execution engine
 │   │   └── execution.go      # Execution operators & query plans
 │   ├── storage/              # Storage manager
@@ -63,6 +75,10 @@ postgres-engine/
 │   └── types/               # Type system
 │       ├── types.go         # Data type definitions
 │       └── types_test.go    # Type system tests
+├── tests/                   # Test files
+│   └── sql_parser_test.go  # SQL parser comprehensive tests
+├── examples/                # Example applications
+│   └── sql_demo.go         # SQL parser demonstration
 ├── data/                    # Data directory
 └── demo_data/              # Demo data samples
 ```
@@ -100,36 +116,74 @@ func main() {
     }
     defer pg.Close()
 
-    // Create database
-    err = pg.ExecuteSQL("CREATE DATABASE exemple")
+    // Create database with SQL parser
+    result, err := pg.ExecuteSQL("CREATE DATABASE exemple")
     if err != nil {
         log.Fatal("Database creation error:", err)
     }
 
-    // Create table with constraints
-    err = pg.ExecuteSQL(`
+    // Create table with constraints using SQL parser
+    result, err = pg.ExecuteSQL(`
         CREATE TABLE utilisateurs (
-            id SERIAL PRIMARY KEY,
+            id INT NOT NULL,
             nom VARCHAR(50) NOT NULL,
-            email VARCHAR(100) UNIQUE,
-            age INT CHECK (age >= 0)
+            email VARCHAR(100),
+            age INT,
+            PRIMARY KEY (id)
         )
     `)
 
-    // Insert data
-    err = pg.ExecuteSQL(`
-        INSERT INTO utilisateurs (nom, email, age) 
-        VALUES ('Alice', 'alice@example.com', 25)
+    // Insert data with SQL parser
+    result, err = pg.ExecuteSQL(`
+        INSERT INTO utilisateurs (id, nom, email, age) 
+        VALUES (1, 'Alice', 'alice@example.com', 25)
     `)
 
-    // Query data
-    result, err := pg.ExecuteSQL("SELECT * FROM utilisateurs")
+    // Query data with SQL parser
+    result, err = pg.ExecuteSQL("SELECT * FROM utilisateurs WHERE age > 20")
 }
 ```
 
 ## 🧪 Testing
 
-Le projet inclut une **comprehensive test suite** :
+Le projet inclut une **comprehensive test suite** avec tests spécialisés pour le SQL parser :
+
+### Tests du SQL Parser
+
+```bash
+# Test complet du SQL parser
+go test ./tests/sql_parser_test.go -v
+
+# Test du lexer SQL
+go test ./tests/sql_parser_test.go -v -run "TestSQLLexer"
+
+# Test du parser DDL (CREATE, DROP, etc.)
+go test ./tests/sql_parser_test.go -v -run "TestSQLParser/DDLStatements"
+
+# Test du parser DML (SELECT, INSERT, etc.)
+go test ./tests/sql_parser_test.go -v -run "TestSQLParser/DMLStatements"
+
+# Test d'intégration SQL avec l'engine
+go test ./tests/sql_parser_test.go -v -run "TestSQLExecutionIntegration"
+
+# Test des cas limites du parser
+go test ./tests/sql_parser_test.go -v -run "TestSQLParserEdgeCases"
+
+# Benchmarks de performance du parser
+go test ./tests/sql_parser_test.go -v -run "BenchmarkSQLParser"
+```
+
+### Démonstration du SQL Parser
+
+```bash
+# Exécuter la démonstration complète
+go run examples/sql_demo.go
+
+# Build de l'exemple (vérification compilation)
+go build ./examples/sql_demo.go
+```
+
+### Tests Généraux
 
 ```bash
 # Run all tests
@@ -147,10 +201,11 @@ go test ./internal/storage -v
 ```
 
 ### Test Coverage
-- **Unit tests** pour tous les modules
-- **Integration tests** pour les opérations SQL
-- **Performance benchmarks** et **load testing**
-- **Concurrency tests** et **transaction testing**
+- **SQL Parser** : Tests complets du lexer, parser et intégration
+- **Unit tests** : Tous les modules (engine, storage, types, etc.)
+- **Integration tests** : Opérations SQL complètes avec parser
+- **Performance benchmarks** : Load testing et optimisations
+- **Edge cases** : Gestion d'erreurs et cas limites SQL
 
 ## ⚙️ Configuration
 
@@ -199,7 +254,10 @@ config := &engine.EngineConfig{
 
 ## 📊 Statistiques du projet
 
-- **Lignes de code** : ~8,600 lignes Go
-- **Modules** : 6 modules principaux
+- **Lignes de code** : ~10,000+ lignes Go
+- **Modules** : 7 modules principaux (+ SQL Parser)
 - **Types supportés** : 50+ types PostgreSQL
-- **Commandes SQL** : Support complet DDL/DML
+- **Tokens SQL** : 100+ tokens supportés
+- **Commandes SQL** : Support complet DDL/DML avec parser
+- **Tests** : 500+ lignes de tests pour le SQL parser
+- **Fonctionnalités SQL** : CREATE, INSERT, SELECT, UPDATE, DELETE, WHERE, INDEX
