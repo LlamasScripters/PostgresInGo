@@ -2,7 +2,7 @@
 
 ## 🎯 Aperçu du projet
 
-Ce projet implémente un **database engine** compatible PostgreSQL développé en Go. Il fournit un **RDBMS** (Relational Database Management System) complet avec support pour SQL, transactions, indexation et contraintes d'intégrité référentielle.
+Ce projet implémente un **database engine** compatible PostgreSQL développé en Go. Il fournit un **RDBMS** (Relational Database Management System) complet avec stockage, transactions, indexation et contraintes d'intégrité référentielle.
 
 ## ✨ Fonctionnalités principales
 
