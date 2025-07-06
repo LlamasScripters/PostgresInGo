@@ -35,7 +35,7 @@ Ce projet implémente un **database engine** compatible PostgreSQL développé e
 - **Views** : CREATE VIEW, DROP VIEW, SELECT FROM VIEW
 - **Constraints** : PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK
 - **Joins** : INNER JOIN, LEFT JOIN, RIGHT JOIN, FULL JOIN
-- **Aggregations** : COUNT, SUM, AVG, MIN, MAX, GROUP BY, HAVING
+- **Aggregations** : COUNT(*), COUNT(column), COUNT(DISTINCT column), SUM, AVG, MIN, MAX, GROUP BY, HAVING
 - **Subqueries** et **CTEs** (Common Table Expressions)
 
 ### 🚀 Performance Optimizations
@@ -154,6 +154,22 @@ func main() {
     
     // Query from view
     result, err = pg.ExecuteSQL("SELECT * FROM utilisateurs_actifs")
+    
+    // Use aggregate functions
+    result, err = pg.ExecuteSQL("SELECT COUNT(*), AVG(age) FROM utilisateurs")
+    
+    // Complex aggregates with GROUP BY
+    result, err = pg.ExecuteSQL(`
+        SELECT 
+            CASE WHEN age < 30 THEN 'Young' ELSE 'Senior' END as age_group,
+            COUNT(*) as total,
+            AVG(age) as avg_age,
+            MIN(age) as min_age,
+            MAX(age) as max_age
+        FROM utilisateurs 
+        GROUP BY age_group
+        HAVING COUNT(*) > 0
+    `)
 }
 ```
 
@@ -196,8 +212,12 @@ go test ./tests/sql_parser_test.go -v -run "BenchmarkSQLParser"
 # Exécuter la démonstration complète
 go run examples/sql_demo.go
 
+# Démonstration des fonctions d'agrégats
+go run examples/aggregate_demo.go
+
 # Build de l'exemple (vérification compilation)
 go build ./examples/sql_demo.go
+go build ./examples/aggregate_demo.go
 ```
 
 ### Tests Généraux
@@ -215,11 +235,15 @@ go test -bench=. ./...
 # Module-specific tests
 go test ./internal/types -v
 go test ./internal/storage -v
+
+# Test des fonctions d'agrégats
+go test ./tests/aggregate_functions_test.go -v
 ```
 
 ### Test Coverage
 - **SQL Parser** : Tests complets du lexer, parser et intégration
 - **Views System** : Tests TDD complets (CREATE VIEW, DROP VIEW, SELECT FROM VIEW)
+- **Aggregate Functions** : Tests complets des fonctions COUNT, SUM, AVG, MIN, MAX avec GROUP BY/HAVING
 - **Unit tests** : Tous les modules (engine, storage, types, etc.)
 - **Integration tests** : Opérations SQL complètes avec parser
 - **Performance benchmarks** : Load testing et optimisations

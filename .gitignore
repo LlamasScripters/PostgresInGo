@@ -6,6 +6,10 @@
 *.dylib
 postgres-engine
 
+# Example binaries
+sql_demo
+aggregate_demo
+
 # Test binary, built with `go test -c`
 *.test
 

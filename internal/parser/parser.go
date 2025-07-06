@@ -919,7 +919,7 @@ func (p *Parser) parseUnaryExpression() Expression {
 
 func (p *Parser) parsePrimaryExpression() Expression {
 	switch p.current.Type {
-	case IDENT:
+	case IDENT, COUNT, SUM, AVG, MIN, MAX:
 		// Could be identifier or function call
 		name := p.current.Literal
 		p.nextToken()
@@ -929,6 +929,14 @@ func (p *Parser) parsePrimaryExpression() Expression {
 			p.nextToken()
 
 			var args []Expression
+			distinct := false
+			
+			// Check for DISTINCT keyword in aggregate functions
+			if p.current.Type == DISTINCT {
+				distinct = true
+				p.nextToken()
+			}
+			
 			if p.current.Type != RPAREN {
 				args = p.parseExpressionList()
 			}
@@ -940,6 +948,7 @@ func (p *Parser) parsePrimaryExpression() Expression {
 			return &FunctionCall{
 				Name:      name,
 				Arguments: args,
+				Distinct:  distinct,
 			}
 		}
 

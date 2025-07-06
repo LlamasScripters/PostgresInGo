@@ -944,3 +944,371 @@ func (op *CrossJoinOperator) GetSchema() types.Schema {
 	
 	return joinedSchema
 }
+
+// AggregateOperator performs aggregation operations
+type AggregateOperator struct {
+	child      Operator
+	groupBy    []string
+	aggregates []*AggregateFunction
+	groups     map[string]*AggregateState
+	processed  bool
+	keys       []string
+	keyIndex   int
+	opened     bool
+}
+
+// AggregateFunction represents an aggregate function
+type AggregateFunction struct {
+	Type   string      // SUM, AVG, COUNT, MIN, MAX
+	Column string      // Column to aggregate
+	Alias  string      // Optional alias for the result
+	Value  interface{} // Final aggregated value
+}
+
+// AggregateState holds the state for aggregate computation
+type AggregateState struct {
+	Count  int64
+	Sum    float64
+	Min    interface{}
+	Max    interface{}
+	Values []interface{}
+}
+
+// NewAggregateOperator creates a new aggregate operator
+func NewAggregateOperator(child Operator, groupBy []string, aggregates []*AggregateFunction) *AggregateOperator {
+	return &AggregateOperator{
+		child:      child,
+		groupBy:    groupBy,
+		aggregates: aggregates,
+		groups:     make(map[string]*AggregateState),
+	}
+}
+
+// Open opens the aggregate operator
+func (op *AggregateOperator) Open() error {
+	if op.opened {
+		return fmt.Errorf("operator already opened")
+	}
+	op.opened = true
+	
+	err := op.child.Open()
+	if err != nil {
+		return err
+	}
+	
+	// Process all tuples and compute aggregates
+	return op.processAllTuples()
+}
+
+// processAllTuples processes all input tuples and computes aggregates
+func (op *AggregateOperator) processAllTuples() error {
+	for {
+		tuple, err := op.child.Next()
+		if err != nil {
+			break // End of input
+		}
+		
+		// Get group key
+		groupKey := op.getGroupKey(tuple)
+		
+		// Initialize group state if not exists
+		if _, exists := op.groups[groupKey]; !exists {
+			op.groups[groupKey] = &AggregateState{
+				Count:  0,
+				Sum:    0,
+				Values: make([]interface{}, 0),
+			}
+		}
+		
+		// Update aggregate state
+		op.updateAggregateState(tuple, op.groups[groupKey])
+	}
+	
+	// Compute final aggregate values
+	for groupKey, state := range op.groups {
+		op.computeFinalValues(groupKey, state)
+	}
+	
+	// Extract group keys for iteration
+	for key := range op.groups {
+		op.keys = append(op.keys, key)
+	}
+	
+	op.processed = true
+	return nil
+}
+
+// getGroupKey generates a group key from a tuple
+func (op *AggregateOperator) getGroupKey(tuple *types.Tuple) string {
+	if len(op.groupBy) == 0 {
+		return "default" // Single group for non-GROUP BY queries
+	}
+	
+	// Parse tuple data
+	tupleData := op.deserializeTupleData(tuple.Data)
+	
+	// Build group key from GROUP BY columns
+	var keyParts []string
+	for _, col := range op.groupBy {
+		if val, exists := tupleData[col]; exists {
+			keyParts = append(keyParts, fmt.Sprintf("%v", val))
+		}
+	}
+	
+	return strings.Join(keyParts, "|")
+}
+
+// updateAggregateState updates the aggregate state with a new tuple
+func (op *AggregateOperator) updateAggregateState(tuple *types.Tuple, state *AggregateState) {
+	// Parse tuple data
+	tupleData := op.deserializeTupleData(tuple.Data)
+	
+	// Update count
+	state.Count++
+	
+	// Update each aggregate function
+	for _, agg := range op.aggregates {
+		if agg.Column == "*" {
+			// COUNT(*) case
+			continue
+		}
+		
+		if val, exists := tupleData[agg.Column]; exists && val != nil {
+			switch agg.Type {
+			case "SUM", "AVG":
+				if numVal, ok := op.convertToNumber(val); ok {
+					state.Sum += numVal
+				}
+			case "MIN":
+				if state.Min == nil || op.compareValues(val, state.Min) < 0 {
+					state.Min = val
+				}
+			case "MAX":
+				if state.Max == nil || op.compareValues(val, state.Max) > 0 {
+					state.Max = val
+				}
+			}
+			
+			// Store value for potential future use
+			state.Values = append(state.Values, val)
+		}
+	}
+}
+
+// computeFinalValues computes the final aggregate values
+func (op *AggregateOperator) computeFinalValues(groupKey string, state *AggregateState) {
+	for _, agg := range op.aggregates {
+		switch agg.Type {
+		case "COUNT":
+			agg.Value = state.Count
+		case "SUM":
+			agg.Value = state.Sum
+		case "AVG":
+			if state.Count > 0 {
+				agg.Value = state.Sum / float64(state.Count)
+			} else {
+				agg.Value = nil
+			}
+		case "MIN":
+			agg.Value = state.Min
+		case "MAX":
+			agg.Value = state.Max
+		}
+	}
+}
+
+// Next returns the next aggregated tuple
+func (op *AggregateOperator) Next() (*types.Tuple, error) {
+	if !op.opened {
+		return nil, fmt.Errorf("operator not opened")
+	}
+	
+	if !op.processed {
+		return nil, fmt.Errorf("tuples not processed")
+	}
+	
+	if op.keyIndex >= len(op.keys) {
+		return nil, fmt.Errorf("no more tuples")
+	}
+	
+	// Get current group key
+	groupKey := op.keys[op.keyIndex]
+	op.keyIndex++
+	
+	// Create result tuple
+	resultData := op.createResultTuple(groupKey)
+	
+	return &types.Tuple{
+		Data: resultData,
+	}, nil
+}
+
+// createResultTuple creates a result tuple for a group
+func (op *AggregateOperator) createResultTuple(groupKey string) []byte {
+	var parts []string
+	
+	// Add GROUP BY columns
+	if len(op.groupBy) > 0 && groupKey != "default" {
+		keyParts := strings.Split(groupKey, "|")
+		for i, col := range op.groupBy {
+			if i < len(keyParts) {
+				parts = append(parts, fmt.Sprintf("%s:%s", col, keyParts[i]))
+			}
+		}
+	}
+	
+	// Add aggregate results
+	for _, agg := range op.aggregates {
+		columnName := agg.Column
+		if agg.Alias != "" {
+			columnName = agg.Alias
+		}
+		
+		if agg.Value != nil {
+			parts = append(parts, fmt.Sprintf("%s:%v", columnName, agg.Value))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s:null", columnName))
+		}
+	}
+	
+	return []byte(strings.Join(parts, ";"))
+}
+
+// Close closes the aggregate operator
+func (op *AggregateOperator) Close() error {
+	op.opened = false
+	return op.child.Close()
+}
+
+// GetSchema returns the aggregate schema
+func (op *AggregateOperator) GetSchema() types.Schema {
+	var columns []types.Column
+	
+	// Add GROUP BY columns
+	childSchema := op.child.GetSchema()
+	for _, groupCol := range op.groupBy {
+		for _, col := range childSchema.Columns {
+			if col.Name == groupCol {
+				columns = append(columns, col)
+				break
+			}
+		}
+	}
+	
+	// Add aggregate function columns
+	for _, agg := range op.aggregates {
+		columnName := agg.Column
+		if agg.Alias != "" {
+			columnName = agg.Alias
+		}
+		
+		var dataType types.DataType
+		switch agg.Type {
+		case "COUNT":
+			dataType = types.IntType
+		case "SUM":
+			dataType = types.FloatType
+		case "AVG":
+			dataType = types.FloatType
+		case "MIN", "MAX":
+			// Use the same type as the source column
+			for _, col := range childSchema.Columns {
+				if col.Name == agg.Column {
+					dataType = col.Type
+					break
+				}
+			}
+		}
+		
+		columns = append(columns, types.Column{
+			Name: columnName,
+			Type: dataType,
+		})
+	}
+	
+	return types.Schema{Columns: columns}
+}
+
+// Helper functions for aggregate operations
+
+// deserializeTupleData deserializes tuple data into a map
+func (op *AggregateOperator) deserializeTupleData(data []byte) map[string]interface{} {
+	result := make(map[string]interface{})
+	dataStr := string(data)
+	
+	// Split by semicolon to get key-value pairs
+	pairs := strings.Split(dataStr, ";")
+	for _, pair := range pairs {
+		if len(pair) == 0 {
+			continue
+		}
+		
+		// Split by colon to get key and value
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		
+		key := parts[0]
+		valueStr := parts[1]
+		
+		// Try to convert to appropriate type
+		if intVal, err := strconv.Atoi(valueStr); err == nil {
+			result[key] = intVal
+		} else if floatVal, err := strconv.ParseFloat(valueStr, 64); err == nil {
+			result[key] = floatVal
+		} else if boolVal, err := strconv.ParseBool(valueStr); err == nil {
+			result[key] = boolVal
+		} else {
+			result[key] = valueStr
+		}
+	}
+	
+	return result
+}
+
+// convertToNumber converts a value to a number for arithmetic operations
+func (op *AggregateOperator) convertToNumber(val interface{}) (float64, bool) {
+	switch v := val.(type) {
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case string:
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
+}
+
+// compareValues compares two values and returns -1, 0, or 1
+func (op *AggregateOperator) compareValues(a, b interface{}) int {
+	// Convert to strings for comparison (simplified)
+	aStr := fmt.Sprintf("%v", a)
+	bStr := fmt.Sprintf("%v", b)
+	
+	// Try numeric comparison first
+	if aNum, aOk := op.convertToNumber(a); aOk {
+		if bNum, bOk := op.convertToNumber(b); bOk {
+			if aNum < bNum {
+				return -1
+			} else if aNum > bNum {
+				return 1
+			}
+			return 0
+		}
+	}
+	
+	// Fall back to string comparison
+	if aStr < bStr {
+		return -1
+	} else if aStr > bStr {
+		return 1
+	}
+	return 0
+}
