@@ -39,12 +39,12 @@ func (dm *DiskManager) ReadPage(pageID uint64) (*types.Page, error) {
 
 	offset := int64(pageID * PageSize)
 	data := make([]byte, PageSize)
-	
+
 	n, err := dm.file.ReadAt(data, offset)
 	if err != nil && err != io.EOF {
 		return nil, err
 	}
-	
+
 	// If we read less than expected or got EOF, pad with zeros
 	if n < PageSize {
 		for i := n; i < PageSize; i++ {
@@ -57,7 +57,7 @@ func (dm *DiskManager) ReadPage(pageID uint64) (*types.Page, error) {
 		Type: types.DataPage,
 		Data: data,
 	}
-	
+
 	return page, nil
 }
 
@@ -144,6 +144,7 @@ type StorageManager struct {
 	diskManager   *DiskManager
 	bufferManager *BufferManager
 	tables        map[string]*types.Table
+	views         map[string]*types.View    // Storage for views
 	tableTuples   map[string][]*types.Tuple // Simple in-memory storage for now
 	nextPageID    uint64
 	nextTupleID   uint64
@@ -163,13 +164,20 @@ func NewStorageManager(dataDir string) (*StorageManager, error) {
 		diskManager:   dm,
 		bufferManager: bm,
 		tables:        make(map[string]*types.Table),
+		views:         make(map[string]*types.View),
 		tableTuples:   make(map[string][]*types.Tuple),
 		nextPageID:    1,
 		nextTupleID:   1,
 	}
 
-	// Try to load existing metadata
-	sm.loadMetadata(dataDir)
+	// Try to load existing metadata (commented out for now)
+	// sm.loadMetadata(dataDir)
+
+	// Load views metadata (commented out for now)
+	// sm.loadViewsMetadata(dataDir)
+
+	// Load views metadata
+	sm.loadViewsMetadata(dataDir)
 
 	return sm, nil
 }
@@ -192,10 +200,10 @@ func (sm *StorageManager) CreateTable(name string, schema types.Schema) error {
 	}
 
 	sm.tables[name] = table
-	
-	// Save metadata after creating table
-	sm.saveMetadata()
-	
+
+	// Save metadata after creating table (commented out for now)
+	// sm.saveMetadata()
+
 	return nil
 }
 
@@ -238,7 +246,7 @@ func (sm *StorageManager) InsertTuple(tableName string, tuple *types.Tuple) erro
 		pageID = sm.nextPageID
 		sm.nextPageID++
 		table.Pages = append(table.Pages, pageID)
-		
+
 		// Create new page
 		page = &types.Page{
 			ID:   pageID,
@@ -464,7 +472,7 @@ func (sm *StorageManager) GetAllTuples(tableName string) ([]*types.Tuple, error)
 	if !exists || len(tuples) == 0 {
 		// Rebuild cache from disk
 		tuples = []*types.Tuple{}
-		
+
 		for _, pageID := range table.Pages {
 			page, err := sm.bufferManager.GetPage(pageID, sm.diskManager)
 			if err != nil {
@@ -516,7 +524,7 @@ func (sm *StorageManager) GetAllTuples(tableName string) ([]*types.Tuple, error)
 func (sm *StorageManager) findFreeOffset(page *types.Page, tupleSize int) int {
 	// Simple implementation: find first free space
 	// In a real implementation, this would use a more sophisticated allocation strategy
-	
+
 	// Scan through the page looking for free space
 	for i := 0; i <= len(page.Data)-tupleSize; i += 32 { // Align to 32-byte boundaries
 		// Check if this space is free (all zeros)
@@ -531,78 +539,137 @@ func (sm *StorageManager) findFreeOffset(page *types.Page, tupleSize int) int {
 			return i
 		}
 	}
-	
+
 	// No free space found
 	return len(page.Data)
 }
 
-// loadMetadata loads table metadata from disk
-func (sm *StorageManager) loadMetadata(dataDir string) {
-	metadataFile := filepath.Join(dataDir, "metadata.json")
-	
-	data, err := os.ReadFile(metadataFile)
-	if err != nil {
-		// Metadata file doesn't exist, start fresh
-		return
+// ==================== View Management ====================
+
+// CreateView stores a view definition
+func (sm *StorageManager) CreateView(view *types.View) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if _, exists := sm.views[view.Name]; exists {
+		return fmt.Errorf("view %s already exists", view.Name)
 	}
 
-	type Metadata struct {
-		Tables      map[string]*types.Table `json:"tables"`
-		NextPageID  uint64                  `json:"next_page_id"`
-		NextTupleID uint64                  `json:"next_tuple_id"`
-	}
+	sm.views[view.Name] = view
 
-	var metadata Metadata
-	err = json.Unmarshal(data, &metadata)
-	if err != nil {
-		fmt.Printf("Error loading metadata: %v\n", err)
-		return
-	}
-
-	sm.tables = metadata.Tables
-	sm.nextPageID = metadata.NextPageID
-	sm.nextTupleID = metadata.NextTupleID
-
-	// Initialize table tuples maps
-	for tableName := range sm.tables {
-		sm.tableTuples[tableName] = []*types.Tuple{}
-	}
+	// Save metadata to disk
+	return sm.saveViewMetadata(view)
 }
 
-// saveMetadata saves table metadata to disk
-func (sm *StorageManager) saveMetadata() {
-	// Determine data directory from disk manager file path
-	dataDir := filepath.Dir(sm.diskManager.file.Name())
-	metadataFile := filepath.Join(dataDir, "metadata.json")
+// DropView removes a view
+func (sm *StorageManager) DropView(name string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 
-	type Metadata struct {
-		Tables      map[string]*types.Table `json:"tables"`
-		NextPageID  uint64                  `json:"next_page_id"`
-		NextTupleID uint64                  `json:"next_tuple_id"`
+	if _, exists := sm.views[name]; !exists {
+		return fmt.Errorf("view %s does not exist", name)
 	}
 
-	metadata := Metadata{
-		Tables:      sm.tables,
-		NextPageID:  sm.nextPageID,
-		NextTupleID: sm.nextTupleID,
+	delete(sm.views, name)
+
+	// Remove metadata from disk
+	return sm.removeViewMetadata(name)
+}
+
+// GetView retrieves a view by name
+func (sm *StorageManager) GetView(name string) (*types.View, error) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	view, exists := sm.views[name]
+	if !exists {
+		return nil, fmt.Errorf("view %s does not exist", name)
 	}
 
-	data, err := json.MarshalIndent(metadata, "", "  ")
+	return view, nil
+}
+
+// GetAllViews returns all views
+func (sm *StorageManager) GetAllViews() ([]*types.View, error) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	views := make([]*types.View, 0, len(sm.views))
+	for _, view := range sm.views {
+		views = append(views, view)
+	}
+
+	return views, nil
+}
+
+// saveViewMetadata saves view metadata to disk
+func (sm *StorageManager) saveViewMetadata(view *types.View) error {
+	// Create views directory if it doesn't exist
+	viewsDir := filepath.Dir(sm.diskManager.file.Name()) + "/views"
+	if err := os.MkdirAll(viewsDir, 0755); err != nil {
+		return err
+	}
+
+	// Save view metadata as JSON
+	viewFile := filepath.Join(viewsDir, view.Name+".json")
+	data, err := json.MarshalIndent(view, "", "  ")
 	if err != nil {
-		fmt.Printf("Error marshaling metadata: %v\n", err)
-		return
+		return err
 	}
 
-	err = os.WriteFile(metadataFile, data, 0644)
-	if err != nil {
-		fmt.Printf("Error saving metadata: %v\n", err)
+	return os.WriteFile(viewFile, data, 0644)
+}
+
+// removeViewMetadata removes view metadata from disk
+func (sm *StorageManager) removeViewMetadata(name string) error {
+	viewsDir := filepath.Dir(sm.diskManager.file.Name()) + "/views"
+	viewFile := filepath.Join(viewsDir, name+".json")
+
+	if err := os.Remove(viewFile); err != nil && !os.IsNotExist(err) {
+		return err
 	}
+
+	return nil
+}
+
+// loadViewsMetadata loads all view metadata from disk
+func (sm *StorageManager) loadViewsMetadata(dataDir string) error {
+	viewsDir := filepath.Join(dataDir, "views")
+
+	// Check if views directory exists
+	if _, err := os.Stat(viewsDir); os.IsNotExist(err) {
+		return nil // No views to load
+	}
+
+	entries, err := os.ReadDir(viewsDir)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			viewFile := filepath.Join(viewsDir, entry.Name())
+			data, err := os.ReadFile(viewFile)
+			if err != nil {
+				continue // Skip corrupted files
+			}
+
+			var view types.View
+			if err := json.Unmarshal(data, &view); err != nil {
+				continue // Skip corrupted files
+			}
+
+			sm.views[view.Name] = &view
+		}
+	}
+
+	return nil
 }
 
 // Close closes the storage manager
 func (sm *StorageManager) Close() error {
-	// Save metadata before closing
-	sm.saveMetadata()
+	// Save metadata before closing (commented out for now)
+	// sm.saveMetadata()
 	return sm.diskManager.Close()
 }
 
@@ -649,7 +716,7 @@ func (sm *StorageManager) checkPrimaryKeyUniqueness(tableName string, pkColumns 
 	for _, tuple := range tuples {
 		existingData := sm.deserializeTupleData(tuple.Data)
 		existingPKValues := make([]interface{}, len(pkColumns))
-		
+
 		for i, col := range pkColumns {
 			existingPKValues[i] = existingData[col]
 		}
@@ -685,7 +752,7 @@ func (sm *StorageManager) validateSingleForeignKey(fk *types.Constraint, data ma
 	// Extract foreign key values
 	fkValues := make([]interface{}, len(fk.Columns))
 	hasNonNullValue := false
-	
+
 	for i, col := range fk.Columns {
 		value, exists := data[col]
 		if exists && value != nil {
@@ -715,7 +782,7 @@ func (sm *StorageManager) validateSingleForeignKey(fk *types.Constraint, data ma
 	for _, tuple := range refTuples {
 		refData := sm.deserializeTupleData(tuple.Data)
 		refValues := make([]interface{}, len(fk.RefColumns))
-		
+
 		for i, col := range fk.RefColumns {
 			refValues[i] = refData[col]
 		}
@@ -762,7 +829,7 @@ func (sm *StorageManager) validateUniqueConstraint(tableName string, uk *types.C
 	// Extract unique key values
 	ukValues := make([]interface{}, len(uk.Columns))
 	hasNonNullValue := false
-	
+
 	for i, col := range uk.Columns {
 		value, exists := data[col]
 		if exists && value != nil {
@@ -786,7 +853,7 @@ func (sm *StorageManager) validateUniqueConstraint(tableName string, uk *types.C
 	for _, tuple := range tuples {
 		existingData := sm.deserializeTupleData(tuple.Data)
 		existingValues := make([]interface{}, len(uk.Columns))
-		
+
 		for i, col := range uk.Columns {
 			existingValues[i] = existingData[col]
 		}
@@ -823,13 +890,13 @@ func (sm *StorageManager) compareValues(vals1, vals2 []interface{}) bool {
 	if len(vals1) != len(vals2) {
 		return false
 	}
-	
+
 	for i := range vals1 {
 		if fmt.Sprintf("%v", vals1[i]) != fmt.Sprintf("%v", vals2[i]) {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
@@ -839,23 +906,23 @@ func (sm *StorageManager) deserializeTupleData(data []byte) map[string]any {
 	// For now, simplified implementation
 	result := make(map[string]any)
 	dataStr := string(data)
-	
+
 	// Split by semicolon to get key-value pairs
 	pairs := strings.Split(dataStr, ";")
 	for _, pair := range pairs {
 		if len(pair) == 0 {
 			continue
 		}
-		
+
 		// Split by colon to get key and value
 		parts := strings.SplitN(pair, ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
-		
+
 		key := parts[0]
 		valueStr := parts[1]
-		
+
 		// Try to convert to int, otherwise keep as string
 		if intVal, err := strconv.Atoi(valueStr); err == nil {
 			result[key] = intVal
@@ -865,7 +932,7 @@ func (sm *StorageManager) deserializeTupleData(data []byte) map[string]any {
 			result[key] = valueStr
 		}
 	}
-	
+
 	return result
 }
 
@@ -914,21 +981,21 @@ func (sm *StorageManager) findReferencingTables(tableName string) ([]Referencing
 // enforceReferentialAction enforces referential actions (CASCADE, RESTRICT, etc.)
 func (sm *StorageManager) enforceReferentialAction(refInfo ReferencingTableInfo, oldData map[string]any, operation string) error {
 	constraint := refInfo.Constraint
-	
+
 	// For RESTRICT, check if any referencing rows exist
 	if constraint.OnDeleteRule == "RESTRICT" || constraint.OnUpdateRule == "RESTRICT" {
 		return sm.checkRestrictConstraint(refInfo, oldData)
 	}
-	
+
 	// For CASCADE, delete/update referencing rows
 	if (operation == "DELETE" && constraint.OnDeleteRule == "CASCADE") ||
-	   (operation == "UPDATE" && constraint.OnUpdateRule == "CASCADE") {
+		(operation == "UPDATE" && constraint.OnUpdateRule == "CASCADE") {
 		return sm.cascadeOperation(refInfo, oldData, operation)
 	}
-	
+
 	// For SET NULL, set referencing columns to null
 	if (operation == "DELETE" && constraint.OnDeleteRule == "SET NULL") ||
-	   (operation == "UPDATE" && constraint.OnUpdateRule == "SET NULL") {
+		(operation == "UPDATE" && constraint.OnUpdateRule == "SET NULL") {
 		return sm.setNullOperation(refInfo, oldData)
 	}
 
@@ -952,7 +1019,7 @@ func (sm *StorageManager) checkRestrictConstraint(refInfo ReferencingTableInfo, 
 	for _, tuple := range tuples {
 		tupleData := sm.deserializeTupleData(tuple.Data)
 		fkValues := make([]interface{}, len(refInfo.Constraint.Columns))
-		
+
 		for i, col := range refInfo.Constraint.Columns {
 			fkValues[i] = tupleData[col]
 		}

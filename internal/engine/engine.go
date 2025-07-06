@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/esgi-git/postgres-engine/internal/execution"
 	"github.com/esgi-git/postgres-engine/internal/index"
@@ -283,7 +284,7 @@ func (pe *PostgresEngine) serializeDataJSON(data map[string]any) []byte {
 	for key, value := range data {
 		keyBytes := []byte(key + ":")
 		result = append(result, keyBytes...)
-		
+
 		switch v := value.(type) {
 		case int:
 			result = append(result, []byte(fmt.Sprintf("%d", v))...)
@@ -302,23 +303,23 @@ func (pe *PostgresEngine) matchesFilter(tuple *types.Tuple, filter map[string]an
 	if len(filter) == 0 {
 		return true
 	}
-	
+
 	// Parse the serialized data back to a map for comparison
 	tupleData := pe.deserializeData(tuple.Data)
-	
+
 	// Check each filter condition
 	for key, value := range filter {
 		tupleValue, exists := tupleData[key]
 		if !exists {
 			return false
 		}
-		
+
 		// Compare values (simplified comparison)
 		if fmt.Sprintf("%v", tupleValue) != fmt.Sprintf("%v", value) {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
@@ -374,23 +375,23 @@ func (pe *PostgresEngine) isBinaryFormat(data []byte) bool {
 func (pe *PostgresEngine) deserializeDataJSON(data []byte) map[string]any {
 	result := make(map[string]any)
 	dataStr := string(data)
-	
+
 	// Split by semicolon to get key-value pairs
 	pairs := strings.Split(dataStr, ";")
 	for _, pair := range pairs {
 		if len(pair) == 0 {
 			continue
 		}
-		
+
 		// Split by colon to get key and value
 		parts := strings.SplitN(pair, ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
-		
+
 		key := parts[0]
 		valueStr := parts[1]
-		
+
 		// Try to convert to int, otherwise keep as string
 		if intVal, err := strconv.Atoi(valueStr); err == nil {
 			result[key] = intVal
@@ -398,7 +399,7 @@ func (pe *PostgresEngine) deserializeDataJSON(data []byte) map[string]any {
 			result[key] = valueStr
 		}
 	}
-	
+
 	return result
 }
 
@@ -423,10 +424,10 @@ func (pe *PostgresEngine) CreateDatabase(name string) error {
 	}
 
 	pe.databases[name] = true
-	
+
 	// Save databases metadata
 	pe.saveDatabases()
-	
+
 	return nil
 }
 
@@ -446,10 +447,10 @@ func (pe *PostgresEngine) DropDatabase(name string) error {
 	}
 
 	delete(pe.databases, name)
-	
+
 	// Save databases metadata
 	pe.saveDatabases()
-	
+
 	return nil
 }
 
@@ -488,6 +489,11 @@ func (pe *PostgresEngine) CreateIndex(name, table string, columns []string) erro
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
 
+	return pe.createIndexInternal(name, table, columns)
+}
+
+// createIndexInternal creates an index without acquiring the lock (internal use)
+func (pe *PostgresEngine) createIndexInternal(name, table string, columns []string) error {
 	// Get table to determine column type
 	tableObj, err := pe.storageManager.GetTable(table)
 	if err != nil {
@@ -566,6 +572,11 @@ func (pe *PostgresEngine) GetTable(name string) (*types.Table, error) {
 	pe.mu.RLock()
 	defer pe.mu.RUnlock()
 
+	return pe.getTableInternal(name)
+}
+
+// getTableInternal retrieves a table by name without acquiring the lock (internal use)
+func (pe *PostgresEngine) getTableInternal(name string) (*types.Table, error) {
 	return pe.storageManager.GetTable(name)
 }
 
@@ -593,7 +604,7 @@ func (pe *PostgresEngine) GetStats() map[string]interface{} {
 // loadDatabases loads database metadata from disk
 func (pe *PostgresEngine) loadDatabases() {
 	dbFile := filepath.Join(pe.dataDir, "databases.json")
-	
+
 	data, err := os.ReadFile(dbFile)
 	if err != nil {
 		// File doesn't exist, start fresh
@@ -802,7 +813,7 @@ func (pe *PostgresEngine) AddPrimaryKey(tableName string, columns []string) erro
 
 	// Create unique index for primary key
 	indexName := fmt.Sprintf("idx_pk_%s", tableName)
-	return pe.CreateIndex(indexName, tableName, columns)
+	return pe.createIndexInternal(indexName, tableName, columns)
 }
 
 // AddForeignKey adds a foreign key constraint to a table
@@ -888,7 +899,7 @@ func (pe *PostgresEngine) AddUniqueConstraint(tableName string, columns []string
 
 	// Create unique index
 	indexName := fmt.Sprintf("idx_uk_%s_%s", tableName, strings.Join(columns, "_"))
-	return pe.CreateIndex(indexName, tableName, columns)
+	return pe.createIndexInternal(indexName, tableName, columns)
 }
 
 // JOIN operations
@@ -944,7 +955,7 @@ func (pe *PostgresEngine) performJoin(leftTable, rightTable, leftColumn, rightCo
 
 	// Create join operator based on join type
 	var joinOp execution.Operator
-	
+
 	if joinType == types.CrossJoin {
 		joinOp = execution.NewCrossJoinOperator(leftScan, rightScan)
 	} else {
@@ -1016,7 +1027,7 @@ func (pe *PostgresEngine) Query(query *types.QueryPlan) ([]*types.Tuple, error) 
 	// Add joins for additional tables
 	for i := 1; i < len(query.Tables); i++ {
 		rightScan := execution.NewSeqScanOperator(query.Tables[i], nil, pe.storageManager)
-		
+
 		// Find join condition for this table
 		var joinPredicate *execution.JoinPredicate
 		for _, joinCond := range query.JoinConditions {
@@ -1107,7 +1118,7 @@ func (pe *PostgresEngine) ExecuteSQL(sql string) (*SQLResult, error) {
 	combinedResult := &SQLResult{
 		Message: fmt.Sprintf("Executed %d statements successfully", len(results)),
 	}
-	
+
 	// If the last statement was a SELECT, return its data
 	if len(results) > 0 && results[len(results)-1].Data != nil {
 		combinedResult.Data = results[len(results)-1].Data
@@ -1119,10 +1130,10 @@ func (pe *PostgresEngine) ExecuteSQL(sql string) (*SQLResult, error) {
 
 // SQLResult represents the result of SQL execution
 type SQLResult struct {
-	Data       []map[string]any `json:"data,omitempty"`       // For SELECT statements
-	Columns    []string         `json:"columns,omitempty"`    // Column names for SELECT
-	RowsAffected int64          `json:"rows_affected"`        // For INSERT/UPDATE/DELETE
-	Message    string           `json:"message,omitempty"`    // Success/info messages
+	Data         []map[string]any `json:"data,omitempty"`    // For SELECT statements
+	Columns      []string         `json:"columns,omitempty"` // Column names for SELECT
+	RowsAffected int64            `json:"rows_affected"`     // For INSERT/UPDATE/DELETE
+	Message      string           `json:"message,omitempty"` // Success/info messages
 }
 
 // executeStatement executes a single parsed statement
@@ -1136,6 +1147,10 @@ func (pe *PostgresEngine) executeStatement(stmt parser.Statement) (*SQLResult, e
 		return pe.executeCreateTable(s)
 	case *parser.DropTableStatement:
 		return pe.executeDropTable(s)
+	case *parser.CreateViewStatement:
+		return pe.executeCreateView(s)
+	case *parser.DropViewStatement:
+		return pe.executeDropView(s)
 	case *parser.CreateIndexStatement:
 		return pe.executeCreateIndex(s)
 	case *parser.DropIndexStatement:
@@ -1206,7 +1221,7 @@ func (pe *PostgresEngine) executeCreateTable(stmt *parser.CreateTableStatement) 
 		case "PRIMARY KEY":
 			err = pe.AddPrimaryKey(stmt.Name, constraintDef.Columns)
 		case "FOREIGN KEY":
-			err = pe.AddForeignKey(stmt.Name, constraintDef.Columns, 
+			err = pe.AddForeignKey(stmt.Name, constraintDef.Columns,
 				constraintDef.RefTable, constraintDef.RefColumns,
 				constraintDef.OnDelete, constraintDef.OnUpdate)
 		case "UNIQUE":
@@ -1237,12 +1252,12 @@ func (pe *PostgresEngine) executeCreateIndex(stmt *parser.CreateIndexStatement) 
 	if err != nil {
 		return nil, err
 	}
-	
+
 	indexType := "INDEX"
 	if stmt.Unique {
 		indexType = "UNIQUE INDEX"
 	}
-	
+
 	return &SQLResult{
 		Message: fmt.Sprintf("%s '%s' created successfully", indexType, stmt.Name),
 	}, nil
@@ -1261,13 +1276,20 @@ func (pe *PostgresEngine) executeDropIndex(stmt *parser.DropIndexStatement) (*SQ
 // ==================== DML Statement Execution ====================
 
 func (pe *PostgresEngine) executeSelect(stmt *parser.SelectStatement) (*SQLResult, error) {
-	// For now, implement basic SELECT FROM table WHERE conditions
+	// For now, implement basic SELECT FROM table/view WHERE conditions
 	if stmt.From == nil {
 		return nil, fmt.Errorf("SELECT without FROM clause not supported")
 	}
 
 	tableName := stmt.From.Table
-	
+
+	// Check if it's a view first
+	if view, err := pe.getViewInternal(tableName); err == nil {
+		// It's a view - execute the view's query with additional filters
+		return pe.executeSelectFromView(stmt, view)
+	}
+
+	// It's a table - continue with normal table processing
 	// Build filter from WHERE clause
 	var filter map[string]any
 	if stmt.Where != nil {
@@ -1278,7 +1300,7 @@ func (pe *PostgresEngine) executeSelect(stmt *parser.SelectStatement) (*SQLResul
 		}
 	}
 
-	// Execute the select
+	// Execute the select on table
 	tuples, err := pe.Select(tableName, filter)
 	if err != nil {
 		return nil, err
@@ -1311,7 +1333,7 @@ func (pe *PostgresEngine) executeSelect(stmt *parser.SelectStatement) (*SQLResul
 	var data []map[string]any
 	for _, tuple := range tuples {
 		rowData := pe.deserializeDataWithSchema(tuple.Data, tableName)
-		
+
 		// Filter columns if not SELECT *
 		if len(columns) > 0 {
 			filteredData := make(map[string]any)
@@ -1343,13 +1365,13 @@ func (pe *PostgresEngine) executeInsert(stmt *parser.InsertStatement) (*SQLResul
 	for _, valueRow := range stmt.Values {
 		// Build data map
 		data := make(map[string]any)
-		
+
 		if len(stmt.Columns) > 0 {
 			// Column names provided
 			if len(stmt.Columns) != len(valueRow) {
 				return nil, fmt.Errorf("column count doesn't match value count")
 			}
-			
+
 			for i, col := range stmt.Columns {
 				value, err := pe.evaluateExpression(valueRow[i])
 				if err != nil {
@@ -1363,11 +1385,11 @@ func (pe *PostgresEngine) executeInsert(stmt *parser.InsertStatement) (*SQLResul
 			if err != nil {
 				return nil, err
 			}
-			
+
 			if len(table.Schema.Columns) != len(valueRow) {
 				return nil, fmt.Errorf("value count doesn't match table column count")
 			}
-			
+
 			for i, col := range table.Schema.Columns {
 				value, err := pe.evaluateExpression(valueRow[i])
 				if err != nil {
@@ -1444,40 +1466,331 @@ func (pe *PostgresEngine) executeDelete(stmt *parser.DeleteStatement) (*SQLResul
 	}, nil
 }
 
-// ==================== Helper Functions ====================
+// ==================== View Management ====================
 
-// parseWhereCondition converts a WHERE expression to a filter map (simplified)
-func (pe *PostgresEngine) parseWhereCondition(expr parser.Expression) (map[string]any, error) {
-	filter := make(map[string]any)
-	
-	// Handle simple binary expressions like column = value
-	if binExpr, ok := expr.(*parser.BinaryExpression); ok {
-		if binExpr.Operator == "=" {
-			if leftIdent, ok := binExpr.Left.(*parser.Identifier); ok {
-				rightValue, err := pe.evaluateExpression(binExpr.Right)
-				if err != nil {
-					return nil, err
-				}
-				filter[leftIdent.Value] = rightValue
-				return filter, nil
+// CreateView creates a new view
+func (pe *PostgresEngine) CreateView(name string, definition string, query *parser.SelectStatement, columns []string) error {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+
+	return pe.createViewInternal(name, definition, query, columns)
+}
+
+// createViewInternal creates a new view without acquiring the lock (internal use)
+func (pe *PostgresEngine) createViewInternal(name string, definition string, query *parser.SelectStatement, columns []string) error {
+	if pe.currentDB == "" {
+		return fmt.Errorf("no database selected")
+	}
+
+	// Check if view already exists
+	if _, err := pe.getViewInternal(name); err == nil {
+		return fmt.Errorf("view %s already exists", name)
+	}
+
+	// Validate the SELECT query by parsing its dependencies
+	dependencies := pe.extractTableDependencies(query)
+
+	// Verify all referenced tables exist
+	for _, tableName := range dependencies {
+		if _, err := pe.getTableInternal(tableName); err != nil {
+			return fmt.Errorf("referenced table %s does not exist", tableName)
+		}
+	}
+
+	// Infer column metadata from the query
+	viewColumns, err := pe.inferViewColumns(query, columns)
+	if err != nil {
+		return fmt.Errorf("failed to infer view columns: %w", err)
+	}
+
+	// Create view metadata
+	view := &types.View{
+		ID:           uint64(time.Now().UnixNano()), // Simple ID generation
+		Name:         name,
+		Definition:   definition,
+		Columns:      viewColumns,
+		Dependencies: dependencies,
+		CreatedAt:    time.Now(),
+		Schema:       pe.currentDB,
+	}
+
+	// Store view metadata
+	return pe.storageManager.CreateView(view)
+}
+
+// DropView drops a view
+func (pe *PostgresEngine) DropView(name string) error {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+
+	return pe.dropViewInternal(name)
+}
+
+// dropViewInternal drops a view without acquiring the lock (internal use)
+func (pe *PostgresEngine) dropViewInternal(name string) error {
+	if pe.currentDB == "" {
+		return fmt.Errorf("no database selected")
+	}
+
+	// Check if view exists
+	if _, err := pe.getViewInternal(name); err != nil {
+		return fmt.Errorf("view %s does not exist", name)
+	}
+
+	return pe.storageManager.DropView(name)
+}
+
+// GetView retrieves view metadata
+func (pe *PostgresEngine) GetView(name string) (*types.View, error) {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+
+	return pe.getViewInternal(name)
+}
+
+// getViewInternal retrieves view metadata without acquiring the lock (internal use)
+func (pe *PostgresEngine) getViewInternal(name string) (*types.View, error) {
+	if pe.currentDB == "" {
+		return nil, fmt.Errorf("no database selected")
+	}
+
+	return pe.storageManager.GetView(name)
+}
+
+// GetAllViews returns all views in the current database
+func (pe *PostgresEngine) GetAllViews() ([]*types.View, error) {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+
+	if pe.currentDB == "" {
+		return nil, fmt.Errorf("no database selected")
+	}
+
+	return pe.storageManager.GetAllViews()
+}
+
+// extractTableDependencies extracts table names referenced in a SELECT query
+func (pe *PostgresEngine) extractTableDependencies(query *parser.SelectStatement) []string {
+	var tables []string
+
+	// Extract from FROM clause
+	if query.From != nil && query.From.Table != "" {
+		tables = append(tables, query.From.Table)
+	}
+
+	// Extract from JOIN clauses
+	for _, join := range query.Joins {
+		if join.Table != "" {
+			tables = append(tables, join.Table)
+		}
+	}
+
+	return tables
+}
+
+// inferViewColumns infers column metadata for a view from its SELECT query
+func (pe *PostgresEngine) inferViewColumns(query *parser.SelectStatement, explicitColumns []string) ([]types.ViewColumn, error) {
+	var viewColumns []types.ViewColumn
+
+	// If explicit columns are provided, use them
+	if len(explicitColumns) > 0 {
+		for _, colName := range explicitColumns {
+			viewColumns = append(viewColumns, types.ViewColumn{
+				Name:       colName,
+				Type:       types.VarcharType, // Default type, should be improved
+				IsComputed: false,
+			})
+		}
+		return viewColumns, nil
+	}
+
+	// Otherwise, infer from SELECT columns
+	for i, col := range query.Columns {
+		var colName string
+		var isComputed bool
+
+		// Simple column name inference
+		if ident, ok := col.(*parser.Identifier); ok {
+			colName = ident.Value
+			isComputed = false
+		} else {
+			// For complex expressions, use a default name
+			colName = fmt.Sprintf("column_%d", i+1)
+			isComputed = true
+		}
+
+		viewColumns = append(viewColumns, types.ViewColumn{
+			Name:       colName,
+			Type:       types.VarcharType, // Default type, should be improved
+			IsComputed: isComputed,
+		})
+	}
+
+	return viewColumns, nil
+}
+
+// executeSelectFromView executes a SELECT statement on a view
+func (pe *PostgresEngine) executeSelectFromView(stmt *parser.SelectStatement, view *types.View) (*SQLResult, error) {
+	// Parse the view's definition (which is just the SELECT statement)
+	viewParser := parser.NewParser(view.Definition)
+	viewStmt, err := viewParser.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse view definition: %w", err)
+	}
+
+	if len(viewStmt.Statements) == 0 {
+		return nil, fmt.Errorf("view definition contains no statements")
+	}
+
+	// The view definition should be a SELECT statement
+	selectStmt, ok := viewStmt.Statements[0].(*parser.SelectStatement)
+	if !ok {
+		return nil, fmt.Errorf("view definition is not a SELECT statement")
+	}
+
+	// Execute the underlying SELECT query from the view
+	// Note: We're not acquiring locks here because we're already inside a locked context
+	result, err := pe.executeSelectInternal(selectStmt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute view query: %w", err)
+	}
+
+	// Apply any additional filters from the original SELECT statement if needed
+	// For now, just return the view's results
+	result.Message = fmt.Sprintf("Selected from view '%s'", view.Name)
+	return result, nil
+}
+
+// executeSelectInternal executes a SELECT statement without acquiring locks (internal use)
+func (pe *PostgresEngine) executeSelectInternal(stmt *parser.SelectStatement) (*SQLResult, error) {
+	if stmt.From == nil {
+		return nil, fmt.Errorf("SELECT without FROM clause not supported")
+	}
+
+	tableName := stmt.From.Table
+
+	// Check if it's a view first
+	if view, err := pe.getViewInternal(tableName); err == nil {
+		// It's a view - execute the view's query with additional filters
+		return pe.executeSelectFromView(stmt, view)
+	}
+
+	// It's a table - continue with normal table processing
+	// Build filter from WHERE clause
+	var filter map[string]any
+	if stmt.Where != nil {
+		var err error
+		filter, err = pe.parseWhereCondition(stmt.Where)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse WHERE condition: %w", err)
+		}
+	}
+
+	// Get data from storage
+	tuples, err := pe.selectInternal(tableName, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert tuples to map format
+	var data []map[string]any
+	for _, tuple := range tuples {
+		rowData := pe.deserializeDataWithSchema(tuple.Data, tableName)
+		data = append(data, rowData)
+	}
+
+	// Build column list (handle SELECT * vs specific columns)
+	var columns []string
+	if len(stmt.Columns) == 1 {
+		if ident, ok := stmt.Columns[0].(*parser.Identifier); ok && ident.Value == "*" {
+			// SELECT * - return all columns
+			table, err := pe.getTableInternal(tableName)
+			if err != nil {
+				return nil, err
+			}
+			for _, col := range table.Schema.Columns {
+				columns = append(columns, col.Name)
 			}
 		}
 	}
-	
-	// For complex conditions, we'd need a more sophisticated approach
-	// For now, return empty filter (which means no filtering)
-	return nil, nil
+
+	if len(columns) == 0 {
+		// Specific columns requested
+		for _, col := range stmt.Columns {
+			if ident, ok := col.(*parser.Identifier); ok {
+				columns = append(columns, ident.Value)
+			}
+		}
+	}
+
+	return &SQLResult{
+		Columns: columns,
+		Data:    data,
+		Message: fmt.Sprintf("Selected %d rows", len(data)),
+	}, nil
 }
 
-// evaluateExpression evaluates an expression to a concrete value
-func (pe *PostgresEngine) evaluateExpression(expr parser.Expression) (any, error) {
-	switch e := expr.(type) {
-	case *parser.Literal:
-		return e.Value, nil
-	case *parser.Identifier:
-		// For now, identifiers in values context are not supported
-		return nil, fmt.Errorf("identifiers in value context not supported")
-	default:
-		return nil, fmt.Errorf("unsupported expression type: %T", expr)
+// applyViewFilter applies additional WHERE conditions to view results (simplified)
+func (pe *PostgresEngine) applyViewFilter(result *SQLResult, stmt *parser.SelectStatement) *SQLResult {
+	// Simplified filtering - in a real implementation this would be more sophisticated
+	// For now, return the result as-is
+	return result
+}
+
+// applyViewProjection applies column selection to view results (simplified)
+func (pe *PostgresEngine) applyViewProjection(result *SQLResult, stmt *parser.SelectStatement) *SQLResult {
+	// Simplified projection - in a real implementation this would be more sophisticated
+	// For now, return the result as-is
+	return result
+}
+
+// parseWhereCondition parses WHERE conditions (simplified implementation)
+func (pe *PostgresEngine) parseWhereCondition(where parser.Expression) (map[string]any, error) {
+	// Handle binary expressions like "column = value"
+	if binExpr, ok := where.(*parser.BinaryExpression); ok {
+		if binExpr.Operator == "=" {
+			// Left side should be a column name (identifier)
+			if leftIdent, ok := binExpr.Left.(*parser.Identifier); ok {
+				// Right side should be a literal value
+				if rightLit, ok := binExpr.Right.(*parser.Literal); ok {
+					filter := make(map[string]any)
+					filter[leftIdent.Value] = rightLit.Value
+					return filter, nil
+				}
+			}
+		}
 	}
+
+	// For now, only support simple equality conditions
+	return nil, fmt.Errorf("only simple equality conditions (column = value) are currently supported")
+}
+
+// evaluateExpression evaluates expressions (simplified implementation)
+func (pe *PostgresEngine) evaluateExpression(expr parser.Expression) (any, error) {
+	// This is a simplified implementation
+	// In a full implementation, this would evaluate complex expressions
+	return nil, fmt.Errorf("complex expressions not yet implemented")
+}
+
+func (pe *PostgresEngine) executeCreateView(stmt *parser.CreateViewStatement) (*SQLResult, error) {
+	// Create the view using the internal method (no locking)
+	err := pe.createViewInternal(stmt.Name, stmt.Definition, stmt.Query, stmt.Columns)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SQLResult{
+		Message: fmt.Sprintf("View '%s' created successfully", stmt.Name),
+	}, nil
+}
+
+func (pe *PostgresEngine) executeDropView(stmt *parser.DropViewStatement) (*SQLResult, error) {
+	err := pe.dropViewInternal(stmt.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SQLResult{
+		Message: fmt.Sprintf("View '%s' dropped successfully", stmt.Name),
+	}, nil
 }

@@ -14,8 +14,8 @@ import (
 
 // Cache line size for modern CPUs (64 bytes)
 const (
-	CacheLineSize = 64
-	BinaryMagic   = 0x504754524553 // "PGTRES" in hex
+	CacheLineSize   = 64
+	BinaryMagic     = 0x504754524553 // "PGTRES" in hex
 	MetadataVersion = 1
 )
 
@@ -28,43 +28,43 @@ type BinaryStorageManager struct {
 
 // BinaryMetadataHeader is cache-aligned metadata header (64 bytes)
 type BinaryMetadataHeader struct {
-	Magic       uint64 // 8 bytes - Magic number for format validation
-	Version     uint32 // 4 bytes - Format version
-	TableCount  uint32 // 4 bytes - Number of tables
-	NextPageID  uint64 // 8 bytes - Next page ID
-	NextTupleID uint64 // 8 bytes - Next tuple ID
-	Reserved1   uint64 // 8 bytes - Reserved for future use
-	Reserved2   uint64 // 8 bytes - Reserved for future use
-	Reserved3   uint64 // 8 bytes - Reserved for future use
-	Checksum    uint32 // 4 bytes - Header checksum
+	Magic       uint64  // 8 bytes - Magic number for format validation
+	Version     uint32  // 4 bytes - Format version
+	TableCount  uint32  // 4 bytes - Number of tables
+	NextPageID  uint64  // 8 bytes - Next page ID
+	NextTupleID uint64  // 8 bytes - Next tuple ID
+	Reserved1   uint64  // 8 bytes - Reserved for future use
+	Reserved2   uint64  // 8 bytes - Reserved for future use
+	Reserved3   uint64  // 8 bytes - Reserved for future use
+	Checksum    uint32  // 4 bytes - Header checksum
 	Padding     [4]byte // 4 bytes - Padding to reach 64 bytes
 }
 
 // BinaryTableHeader represents a table in binary format (cache-aligned to 64 bytes)
 type BinaryTableHeader struct {
-	TableID        uint64    // 8 bytes - Table ID
-	NameLength     uint32    // 4 bytes - Length of table name
-	ColumnCount    uint32    // 4 bytes - Number of columns
-	ConstraintCount uint32   // 4 bytes - Number of constraints
-	IndexCount     uint32    // 4 bytes - Number of indexes
-	PageCount      uint32    // 4 bytes - Number of pages
-	TupleCount     uint64    // 8 bytes - Total tuple count
-	TableSize      uint64    // 8 bytes - Size in bytes
-	Reserved1      uint64    // 8 bytes - Reserved for future use
-	Reserved2      uint64    // 8 bytes - Reserved for future use
-	Checksum       uint32    // 4 bytes - Header checksum
-	Padding        [4]byte   // 4 bytes - Padding to reach 64 bytes
+	TableID         uint64  // 8 bytes - Table ID
+	NameLength      uint32  // 4 bytes - Length of table name
+	ColumnCount     uint32  // 4 bytes - Number of columns
+	ConstraintCount uint32  // 4 bytes - Number of constraints
+	IndexCount      uint32  // 4 bytes - Number of indexes
+	PageCount       uint32  // 4 bytes - Number of pages
+	TupleCount      uint64  // 8 bytes - Total tuple count
+	TableSize       uint64  // 8 bytes - Size in bytes
+	Reserved1       uint64  // 8 bytes - Reserved for future use
+	Reserved2       uint64  // 8 bytes - Reserved for future use
+	Checksum        uint32  // 4 bytes - Header checksum
+	Padding         [4]byte // 4 bytes - Padding to reach 64 bytes
 }
 
 // BinaryColumnInfo represents column metadata (cache-aligned to 32 bytes)
 type BinaryColumnInfo struct {
-	NameOffset    uint32       // 4 bytes - Offset to column name in string table
+	NameOffset    uint32         // 4 bytes - Offset to column name in string table
 	DataType      types.DataType // 4 bytes - Column data type
-	Size          uint32       // 4 bytes - Column size
-	Flags         uint32       // 4 bytes - Flags (nullable, primary key, unique, auto increment)
-	DefaultOffset uint32       // 4 bytes - Offset to default value in string table
-	Reserved      uint32       // 4 bytes - Reserved for future use
-	Padding       [8]byte      // 8 bytes - Padding to reach 32 bytes
+	Size          uint32         // 4 bytes - Column size
+	Flags         uint32         // 4 bytes - Flags (nullable, primary key, unique, auto increment)
+	DefaultOffset uint32         // 4 bytes - Offset to default value in string table
+	Reserved      uint32         // 4 bytes - Reserved for future use
+	Padding       [8]byte        // 8 bytes - Padding to reach 32 bytes
 }
 
 // Column flags
@@ -77,19 +77,19 @@ const (
 
 // BinaryConstraintInfo represents constraint metadata (cache-aligned to 64 bytes)
 type BinaryConstraintInfo struct {
-	NameOffset      uint32                 // 4 bytes - Offset to constraint name
-	Type            types.ConstraintType   // 4 bytes - Constraint type
-	ColumnCount     uint32                 // 4 bytes - Number of columns in constraint
-	RefTableOffset  uint32                 // 4 bytes - Offset to referenced table name
-	RefColumnCount  uint32                 // 4 bytes - Number of referenced columns
-	OnDeleteRule    uint32                 // 4 bytes - On delete rule
-	OnUpdateRule    uint32                 // 4 bytes - On update rule
-	CheckExprOffset uint32                 // 4 bytes - Offset to check expression
-	Reserved1       uint64                 // 8 bytes - Reserved
-	Reserved2       uint64                 // 8 bytes - Reserved
-	Reserved3       uint64                 // 8 bytes - Reserved
-	Checksum        uint32                 // 4 bytes - Constraint checksum
-	Padding         [4]byte                // 4 bytes - Padding to 64 bytes
+	NameOffset      uint32               // 4 bytes - Offset to constraint name
+	Type            types.ConstraintType // 4 bytes - Constraint type
+	ColumnCount     uint32               // 4 bytes - Number of columns in constraint
+	RefTableOffset  uint32               // 4 bytes - Offset to referenced table name
+	RefColumnCount  uint32               // 4 bytes - Number of referenced columns
+	OnDeleteRule    uint32               // 4 bytes - On delete rule
+	OnUpdateRule    uint32               // 4 bytes - On update rule
+	CheckExprOffset uint32               // 4 bytes - Offset to check expression
+	Reserved1       uint64               // 8 bytes - Reserved
+	Reserved2       uint64               // 8 bytes - Reserved
+	Reserved3       uint64               // 8 bytes - Reserved
+	Checksum        uint32               // 4 bytes - Constraint checksum
+	Padding         [4]byte              // 4 bytes - Padding to 64 bytes
 }
 
 // BinaryTupleHeader represents tuple metadata (cache-aligned to 32 bytes)
@@ -207,10 +207,10 @@ func (bsm *BinaryStorageManager) readBinaryTable(file *os.File) (*types.Table, e
 
 	// Create table structure
 	table := &types.Table{
-		ID:          tableHeader.TableID,
-		Name:        tableName,
-		Pages:       make([]uint64, tableHeader.PageCount),
-		Indexes:     make(map[string]*types.Index),
+		ID:      tableHeader.TableID,
+		Name:    tableName,
+		Pages:   make([]uint64, tableHeader.PageCount),
+		Indexes: make(map[string]*types.Index),
 		Stats: types.TableStats{
 			TupleCount: int64(tableHeader.TupleCount),
 			PageCount:  int64(tableHeader.PageCount),
@@ -231,7 +231,7 @@ func (bsm *BinaryStorageManager) readBinaryTable(file *os.File) (*types.Table, e
 	// Read columns
 	columns := make([]types.Column, tableHeader.ColumnCount)
 	columnInfos := make([]BinaryColumnInfo, tableHeader.ColumnCount)
-	
+
 	// Read column headers
 	for i := uint32(0); i < tableHeader.ColumnCount; i++ {
 		err = binary.Read(file, binary.LittleEndian, &columnInfos[i])
@@ -257,7 +257,7 @@ func (bsm *BinaryStorageManager) readBinaryTable(file *os.File) (*types.Table, e
 			IsUnique:      (colInfo.Flags & FlagUnique) != 0,
 			AutoIncrement: (colInfo.Flags & FlagAutoIncrement) != 0,
 		}
-		
+
 		if colInfo.DefaultOffset > 0 {
 			columns[i].Default = bsm.getStringFromTable(stringTable, colInfo.DefaultOffset)
 		}
@@ -342,7 +342,7 @@ func (bsm *BinaryStorageManager) readBinaryConstraint(file *os.File, stringTable
 	if constraintInfo.Type == types.ForeignKeyConstraint {
 		constraint.RefTable = bsm.getStringFromTable(stringTable, constraintInfo.RefTableOffset)
 		constraint.RefColumns = make([]string, constraintInfo.RefColumnCount)
-		
+
 		for i := uint32(0); i < constraintInfo.RefColumnCount; i++ {
 			var nameOffset uint32
 			err = binary.Read(file, binary.LittleEndian, &nameOffset)
@@ -450,7 +450,7 @@ func (bsm *BinaryStorageManager) writeBinaryTable(file *os.File, table *types.Ta
 	// Add all column names and defaults
 	columnOffsets := make([]uint32, len(table.Schema.Columns))
 	defaultOffsets := make([]uint32, len(table.Schema.Columns))
-	
+
 	for i, col := range table.Schema.Columns {
 		columnOffsets[i] = bsm.addStringToTable(stringTable, stringOffsets, col.Name)
 		if col.Default != nil {
@@ -536,7 +536,7 @@ func (bsm *BinaryStorageManager) writeBinaryTable(file *os.File, table *types.Ta
 	if err != nil {
 		return err
 	}
-	
+
 	_, err = file.Write(stringTableData)
 	if err != nil {
 		return err
@@ -564,40 +564,40 @@ func (bsm *BinaryStorageManager) addStringToTable(buffer *bytes.Buffer, offsets 
 	buffer.WriteString(str)
 	buffer.WriteByte(0) // Null terminator
 	offsets[str] = offset
-	
+
 	return offset
 }
 
 // getAllConstraints collects all constraints for a table
 func (bsm *BinaryStorageManager) getAllConstraints(table *types.Table) []*types.Constraint {
 	var constraints []*types.Constraint
-	
+
 	// Add schema constraints
 	for i := range table.Schema.Constraints {
 		constraints = append(constraints, &table.Schema.Constraints[i])
 	}
-	
+
 	// Add primary key
 	if table.PrimaryKey != nil {
 		constraints = append(constraints, table.PrimaryKey)
 	}
-	
+
 	// Add foreign keys
 	constraints = append(constraints, table.ForeignKeys...)
-	
+
 	// Add unique keys
 	constraints = append(constraints, table.UniqueKeys...)
-	
+
 	// Add check constraints
 	constraints = append(constraints, table.CheckConstraints...)
-	
+
 	return constraints
 }
 
 // writeBinaryConstraint writes a constraint in binary format
 func (bsm *BinaryStorageManager) writeBinaryConstraint(file *os.File, constraint *types.Constraint, stringTable *bytes.Buffer, stringOffsets map[string]uint32) error {
 	nameOffset := bsm.addStringToTable(stringTable, stringOffsets, constraint.Name)
-	
+
 	constraintInfo := BinaryConstraintInfo{
 		NameOffset:     nameOffset,
 		Type:           constraint.Type,
@@ -665,9 +665,9 @@ func (bsm *BinaryStorageManager) convertStringToRule(rule string) types.Referent
 
 // migrateFromJSON migrates existing JSON metadata to binary format
 func (bsm *BinaryStorageManager) migrateFromJSON() error {
-	// Load JSON metadata using parent method
-	bsm.StorageManager.loadMetadata(filepath.Dir(bsm.metadataFilePath))
-	
+	// Load JSON metadata using parent method (commented out for now)
+	// bsm.StorageManager.loadMetadata(filepath.Dir(bsm.metadataFilePath))
+
 	// Save in binary format
 	return bsm.saveBinaryMetadata()
 }
@@ -678,7 +678,7 @@ func (bsm *BinaryStorageManager) Close() error {
 	if err := bsm.saveBinaryMetadata(); err != nil {
 		return err
 	}
-	
+
 	// Close base storage
 	return bsm.StorageManager.Close()
 }
@@ -686,7 +686,7 @@ func (bsm *BinaryStorageManager) Close() error {
 // SerializeTupleBinary serializes tuple data in cache-aligned binary format
 func (bsm *BinaryStorageManager) SerializeTupleBinary(data map[string]any, schema types.Schema) []byte {
 	buffer := bytes.NewBuffer(nil)
-	
+
 	// Calculate total size for pre-allocation
 	estimatedSize := int(unsafe.Sizeof(BinaryTupleHeader{}))
 	for _, col := range schema.Columns {
@@ -694,19 +694,19 @@ func (bsm *BinaryStorageManager) SerializeTupleBinary(data map[string]any, schem
 			estimatedSize += bsm.estimateValueSize(value, col.Type)
 		}
 	}
-	
+
 	// Pre-grow buffer with estimated size (no alignment for now to avoid size issues)
 	buffer.Grow(estimatedSize)
-	
+
 	// Write tuple header placeholder (will be updated later)
 	header := BinaryTupleHeader{
 		ColumnCount: uint32(len(schema.Columns)),
 		Timestamp:   uint64(0), // Will be set by caller
 	}
-	
+
 	headerPos := buffer.Len()
 	binary.Write(buffer, binary.LittleEndian, &header)
-	
+
 	// Write column data in schema order for predictable layout
 	dataStart := buffer.Len()
 	for _, col := range schema.Columns {
@@ -716,23 +716,23 @@ func (bsm *BinaryStorageManager) SerializeTupleBinary(data map[string]any, schem
 			buffer.WriteByte(0)
 			continue
 		}
-		
+
 		// Write value type and data
 		bsm.writeBinaryValue(buffer, value, col.Type)
 	}
-	
+
 	// Update header with actual data size
 	dataSize := buffer.Len() - dataStart
 	header.DataSize = uint32(dataSize)
-	
+
 	// Calculate checksum for data
 	dataBytes := buffer.Bytes()[dataStart:]
 	header.Checksum = crc32.ChecksumIEEE(dataBytes)
-	
+
 	// Update header in buffer
 	headerBytes := (*[unsafe.Sizeof(header)]byte)(unsafe.Pointer(&header))[:]
 	copy(buffer.Bytes()[headerPos:], headerBytes)
-	
+
 	return buffer.Bytes()
 }
 
@@ -807,46 +807,46 @@ func (bsm *BinaryStorageManager) DeserializeTupleBinary(data []byte, schema type
 	if len(data) < int(unsafe.Sizeof(BinaryTupleHeader{})) {
 		return make(map[string]any)
 	}
-	
+
 	reader := bytes.NewReader(data)
-	
+
 	// Read tuple header
 	var header BinaryTupleHeader
 	binary.Read(reader, binary.LittleEndian, &header)
-	
+
 	// Verify checksum
-	dataBytes := data[unsafe.Sizeof(header):unsafe.Sizeof(header)+uintptr(header.DataSize)]
+	dataBytes := data[unsafe.Sizeof(header) : unsafe.Sizeof(header)+uintptr(header.DataSize)]
 	calculatedChecksum := crc32.ChecksumIEEE(dataBytes)
 	if calculatedChecksum != header.Checksum {
 		// Data corruption detected, return empty map
 		return make(map[string]any)
 	}
-	
+
 	result := make(map[string]any)
-	
+
 	// Read column values in schema order
 	for _, col := range schema.Columns {
 		if reader.Len() == 0 {
 			break
 		}
-		
+
 		// Read type marker
 		var typeByte byte
 		binary.Read(reader, binary.LittleEndian, &typeByte)
-		
+
 		if typeByte == 0 {
 			// Null value
 			result[col.Name] = nil
 			continue
 		}
-		
+
 		// Read value based on type
 		value := bsm.readBinaryValue(reader, typeByte)
 		if value != nil {
 			result[col.Name] = value
 		}
 	}
-	
+
 	return result
 }
 
