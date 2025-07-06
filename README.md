@@ -32,6 +32,7 @@ Ce projet implémente un **database engine** compatible PostgreSQL développé e
 ### 🔧 SQL Operations
 - **DDL** (Data Definition Language) : CREATE TABLE, DROP TABLE, ALTER TABLE
 - **DML** (Data Manipulation Language) : INSERT, UPDATE, DELETE, SELECT
+- **Views** : CREATE VIEW, DROP VIEW, SELECT FROM VIEW
 - **Constraints** : PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK
 - **Joins** : INNER JOIN, LEFT JOIN, RIGHT JOIN, FULL JOIN
 - **Aggregations** : COUNT, SUM, AVG, MIN, MAX, GROUP BY, HAVING
@@ -76,7 +77,10 @@ postgres-engine/
 │       ├── types.go         # Data type definitions
 │       └── types_test.go    # Type system tests
 ├── tests/                   # Test files
-│   └── sql_parser_test.go  # SQL parser comprehensive tests
+│   ├── sql_parser_test.go  # SQL parser comprehensive tests
+│   ├── views_test.go       # Views TDD tests (CREATE/DROP/SELECT)
+│   ├── views_parsing_test.go # Views parsing unit tests
+│   └── ...                 # Other comprehensive tests
 ├── examples/                # Example applications
 │   └── sql_demo.go         # SQL parser demonstration
 ├── data/                    # Data directory
@@ -141,6 +145,15 @@ func main() {
 
     // Query data with SQL parser
     result, err = pg.ExecuteSQL("SELECT * FROM utilisateurs WHERE age > 20")
+
+    // Create and use views with SQL parser
+    result, err = pg.ExecuteSQL(`
+        CREATE VIEW utilisateurs_actifs AS 
+        SELECT id, nom, email FROM utilisateurs WHERE age >= 18
+    `)
+    
+    // Query from view
+    result, err = pg.ExecuteSQL("SELECT * FROM utilisateurs_actifs")
 }
 ```
 
@@ -153,6 +166,10 @@ Le projet inclut une **comprehensive test suite** avec tests spécialisés pour 
 ```bash
 # Test complet du SQL parser
 go test ./tests/sql_parser_test.go -v
+
+# Test des vues (CREATE/DROP/SELECT FROM VIEW)
+go test ./tests/views_test.go -v
+go test ./tests/views_parsing_test.go -v
 
 # Test du lexer SQL
 go test ./tests/sql_parser_test.go -v -run "TestSQLLexer"
@@ -202,6 +219,7 @@ go test ./internal/storage -v
 
 ### Test Coverage
 - **SQL Parser** : Tests complets du lexer, parser et intégration
+- **Views System** : Tests TDD complets (CREATE VIEW, DROP VIEW, SELECT FROM VIEW)
 - **Unit tests** : Tous les modules (engine, storage, types, etc.)
 - **Integration tests** : Opérations SQL complètes avec parser
 - **Performance benchmarks** : Load testing et optimisations
@@ -258,6 +276,6 @@ config := &engine.EngineConfig{
 - **Modules** : 7 modules principaux (+ SQL Parser)
 - **Types supportés** : 50+ types PostgreSQL
 - **Tokens SQL** : 100+ tokens supportés
-- **Commandes SQL** : Support complet DDL/DML avec parser
-- **Tests** : 500+ lignes de tests pour le SQL parser
-- **Fonctionnalités SQL** : CREATE, INSERT, SELECT, UPDATE, DELETE, WHERE, INDEX
+- **Commandes SQL** : Support complet DDL/DML avec parser + Views
+- **Tests** : 800+ lignes de tests pour le SQL parser et Views
+- **Fonctionnalités SQL** : CREATE, INSERT, SELECT, UPDATE, DELETE, WHERE, INDEX, CREATE VIEW, DROP VIEW

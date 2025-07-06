@@ -11,7 +11,7 @@ import (
 
 func main() {
 	fmt.Println("=== PostgreSQL Engine SQL Parser Demo ===")
-	
+
 	// Initialize engine
 	pg, err := engine.NewPostgresEngine("./demo_data")
 	if err != nil {
@@ -23,7 +23,7 @@ func main() {
 	os.RemoveAll("./demo_data")
 
 	fmt.Println("\n🗄️ Creating database and table with SQL...")
-	
+
 	// Create database using SQL
 	result, err := pg.ExecuteSQL("CREATE DATABASE ecommerce")
 	if err != nil {
@@ -43,7 +43,7 @@ func main() {
 			PRIMARY KEY (id)
 		)
 	`
-	
+
 	result, err = pg.ExecuteSQL(createTableSQL)
 	if err != nil {
 		log.Fatal("Failed to create table:", err)
@@ -51,7 +51,7 @@ func main() {
 	fmt.Printf("✓ %s\n", result.Message)
 
 	fmt.Println("\n📊 Inserting data with SQL...")
-	
+
 	// Insert multiple products using SQL
 	insertSQL := `
 		INSERT INTO products (id, name, price, category, in_stock) VALUES
@@ -61,7 +61,7 @@ func main() {
 		(4, 'AirPods Pro', 249.99, 'Audio', true),
 		(5, 'Mac Studio', 1999.99, 'Desktops', true)
 	`
-	
+
 	result, err = pg.ExecuteSQL(insertSQL)
 	if err != nil {
 		log.Fatal("Failed to insert data:", err)
@@ -69,13 +69,13 @@ func main() {
 	fmt.Printf("✓ %s\n", result.Message)
 
 	fmt.Println("\n🔍 Querying data with SQL...")
-	
+
 	// Select all products
 	result, err = pg.ExecuteSQL("SELECT * FROM products")
 	if err != nil {
 		log.Fatal("Failed to select data:", err)
 	}
-	
+
 	fmt.Printf("📋 All Products (%d rows):\n", len(result.Data))
 	printTableResult(result)
 
@@ -84,7 +84,7 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to select with WHERE:", err)
 	}
-	
+
 	fmt.Printf("\n📦 In-Stock Products (%d rows):\n", len(result.Data))
 	printTableResult(result)
 
@@ -93,12 +93,12 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to select expensive products:", err)
 	}
-	
+
 	fmt.Printf("\n💰 Expensive Products (>$1000) (%d rows):\n", len(result.Data))
 	printTableResult(result)
 
 	fmt.Println("\n🔄 Updating data with SQL...")
-	
+
 	// Update a product
 	result, err = pg.ExecuteSQL("UPDATE products SET price = 549.99 WHERE id = 3")
 	if err != nil {
@@ -111,12 +111,12 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to verify update:", err)
 	}
-	
+
 	fmt.Printf("📱 Updated Product:\n")
 	printTableResult(result)
 
 	fmt.Println("\n🗑️ Deleting data with SQL...")
-	
+
 	// Delete a product
 	result, err = pg.ExecuteSQL("DELETE FROM products WHERE id = 5")
 	if err != nil {
@@ -139,7 +139,7 @@ func main() {
 	}
 
 	fmt.Println("\n🏗️ Creating index with SQL...")
-	
+
 	// Create an index
 	result, err = pg.ExecuteSQL("CREATE INDEX idx_category ON products (category)")
 	if err != nil {
@@ -167,7 +167,7 @@ func main() {
 			metadata VARCHAR(200)
 		)
 	`
-	
+
 	result, err = pg.ExecuteSQL(complexTableSQL)
 	if err != nil {
 		log.Fatal("Failed to create complex table:", err)
@@ -180,7 +180,7 @@ func main() {
 		(1, 'Test product with long description', 99.99, '2024-01-15', true, 'some metadata'),
 		(2, 'Another test item', 149.50, '2024-02-20', false, 'more metadata')
 	`
-	
+
 	result, err = pg.ExecuteSQL(complexInsertSQL)
 	if err != nil {
 		log.Fatal("Failed to insert complex data:", err)
@@ -192,14 +192,14 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to select complex data:", err)
 	}
-	
+
 	fmt.Printf("\n📊 Complex Data Types (%d rows):\n", len(result.Data))
 	printTableResult(result)
 
 	fmt.Println("\n🎯 SQL Parser Demo completed successfully!")
 	fmt.Printf("💾 Data persisted to ./demo_data/\n")
 	fmt.Printf("🔄 Run again to see data persistence!\n")
-	
+
 	// Show JSON output
 	fmt.Println("\n📄 Sample JSON output:")
 	jsonData, _ := json.MarshalIndent(result, "", "  ")

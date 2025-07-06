@@ -10,7 +10,7 @@ import (
 
 func main() {
 	fmt.Println("=== PostgreSQL Engine Demo ===")
-	
+
 	// Initialize engine
 	pg, err := engine.NewPostgresEngine("./data")
 	if err != nil {
@@ -71,7 +71,7 @@ func main() {
 
 	// Demonstrate CRUD operations
 	fmt.Println("\n--- CRUD Operations ---")
-	
+
 	// SELECT with filter
 	filter := map[string]any{"id": 1}
 	results, err := pg.Select("users", filter)
