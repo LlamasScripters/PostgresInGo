@@ -308,6 +308,26 @@ type LogRecord struct {
 	Timestamp time.Time
 }
 
+// View represents a database view
+type View struct {
+	ID           uint64
+	Name         string
+	Definition   string       // The original SQL query defining the view
+	Columns      []ViewColumn // Column metadata for the view
+	Dependencies []string     // Tables this view depends on
+	CreatedAt    time.Time
+	Schema       string // Database schema name
+}
+
+// ViewColumn represents a column in a view
+type ViewColumn struct {
+	Name         string
+	Type         DataType
+	SourceTable  string // Which table this column comes from
+	SourceColumn string // Original column name if different
+	IsComputed   bool   // True for computed/aggregate columns
+}
+
 // Helper functions for constraint management
 
 // GetPrimaryKeyColumns returns the primary key column names

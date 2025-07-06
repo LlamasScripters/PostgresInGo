@@ -13,11 +13,11 @@ const (
 	COMMENT
 
 	// Literals
-	IDENT     // table_name, column_name, etc.
-	INT       // 123
-	FLOAT     // 123.45
-	STRING    // 'hello'
-	BOOLEAN   // true, false
+	IDENT   // table_name, column_name, etc.
+	INT     // 123
+	FLOAT   // 123.45
+	STRING  // 'hello'
+	BOOLEAN // true, false
 
 	// Keywords - DDL
 	CREATE
@@ -26,6 +26,7 @@ const (
 	ALTER
 	DATABASE
 	INDEX
+	VIEW
 	PRIMARY
 	KEY
 	FOREIGN
@@ -89,19 +90,19 @@ const (
 	NUMERIC_TYPE
 
 	// Operators
-	ASSIGN    // =
-	EQ        // =
-	NOT_EQ    // != or <>
-	LT        // <
-	GT        // >
-	LTE       // <=
-	GTE       // >=
-	LIKE      // LIKE
-	IN        // IN
-	IS        // IS
-	AND       // AND
-	OR        // OR
-	BETWEEN   // BETWEEN
+	ASSIGN  // =
+	EQ      // =
+	NOT_EQ  // != or <>
+	LT      // <
+	GT      // >
+	LTE     // <=
+	GTE     // >=
+	LIKE    // LIKE
+	IN      // IN
+	IS      // IS
+	AND     // AND
+	OR      // OR
+	BETWEEN // BETWEEN
 
 	// Arithmetic operators
 	PLUS     // +
@@ -134,7 +135,7 @@ type Token struct {
 
 // String returns a string representation of the token
 func (t Token) String() string {
-	return fmt.Sprintf("Token{Type: %s, Literal: %q, Pos: %d:%d}", 
+	return fmt.Sprintf("Token{Type: %s, Literal: %q, Pos: %d:%d}",
 		t.Type.String(), t.Literal, t.Line, t.Column)
 }
 
@@ -147,6 +148,7 @@ var keywords = map[string]TokenType{
 	"ALTER":          ALTER,
 	"DATABASE":       DATABASE,
 	"INDEX":          INDEX,
+	"VIEW":           VIEW,
 	"PRIMARY":        PRIMARY,
 	"KEY":            KEY,
 	"FOREIGN":        FOREIGN,
@@ -257,6 +259,8 @@ func (tt TokenType) String() string {
 		return "DATABASE"
 	case INDEX:
 		return "INDEX"
+	case VIEW:
+		return "VIEW"
 	case PRIMARY:
 		return "PRIMARY"
 	case KEY:
@@ -431,15 +435,15 @@ func LookupIdent(ident string) TokenType {
 // IsKeyword checks if a token type is a keyword
 func IsKeyword(tokenType TokenType) bool {
 	switch tokenType {
-	case CREATE, TABLE, DROP, ALTER, DATABASE, INDEX, PRIMARY, KEY, FOREIGN, 
-		 REFERENCES, UNIQUE, CHECK, DEFAULT, NOT, NULL, AUTO_INCREMENT, CONSTRAINT,
-		 SELECT, INSERT, UPDATE, DELETE, FROM, WHERE, INTO, VALUES, SET,
-		 ORDER, BY, GROUP, HAVING, LIMIT, OFFSET, DISTINCT, AS, UNION, ALL,
-		 JOIN, INNER, LEFT, RIGHT, FULL, OUTER, ON, USING,
-		 COUNT, SUM, AVG, MIN, MAX,
-		 INT_TYPE, VARCHAR_TYPE, TEXT_TYPE, BOOLEAN_TYPE, DATE_TYPE, TIME_TYPE,
-		 TIMESTAMP_TYPE, FLOAT_TYPE, DECIMAL_TYPE, NUMERIC_TYPE,
-		 AND, OR, LIKE, IN, IS, BETWEEN:
+	case CREATE, TABLE, DROP, ALTER, DATABASE, INDEX, VIEW, PRIMARY, KEY, FOREIGN,
+		REFERENCES, UNIQUE, CHECK, DEFAULT, NOT, NULL, AUTO_INCREMENT, CONSTRAINT,
+		SELECT, INSERT, UPDATE, DELETE, FROM, WHERE, INTO, VALUES, SET,
+		ORDER, BY, GROUP, HAVING, LIMIT, OFFSET, DISTINCT, AS, UNION, ALL,
+		JOIN, INNER, LEFT, RIGHT, FULL, OUTER, ON, USING,
+		COUNT, SUM, AVG, MIN, MAX,
+		INT_TYPE, VARCHAR_TYPE, TEXT_TYPE, BOOLEAN_TYPE, DATE_TYPE, TIME_TYPE,
+		TIMESTAMP_TYPE, FLOAT_TYPE, DECIMAL_TYPE, NUMERIC_TYPE,
+		AND, OR, LIKE, IN, IS, BETWEEN:
 		return true
 	default:
 		return false
@@ -449,8 +453,8 @@ func IsKeyword(tokenType TokenType) bool {
 // IsDataType checks if a token type represents a data type
 func IsDataType(tokenType TokenType) bool {
 	switch tokenType {
-	case INT_TYPE, VARCHAR_TYPE, TEXT_TYPE, BOOLEAN_TYPE, DATE_TYPE, 
-		 TIME_TYPE, TIMESTAMP_TYPE, FLOAT_TYPE, DECIMAL_TYPE, NUMERIC_TYPE:
+	case INT_TYPE, VARCHAR_TYPE, TEXT_TYPE, BOOLEAN_TYPE, DATE_TYPE,
+		TIME_TYPE, TIMESTAMP_TYPE, FLOAT_TYPE, DECIMAL_TYPE, NUMERIC_TYPE:
 		return true
 	default:
 		return false
@@ -461,7 +465,7 @@ func IsDataType(tokenType TokenType) bool {
 func IsOperator(tokenType TokenType) bool {
 	switch tokenType {
 	case ASSIGN, EQ, NOT_EQ, LT, GT, LTE, GTE, LIKE, IN, IS, AND, OR, BETWEEN,
-		 PLUS, MINUS, MULTIPLY, DIVIDE, MODULO:
+		PLUS, MINUS, MULTIPLY, DIVIDE, MODULO:
 		return true
 	default:
 		return false

@@ -78,7 +78,7 @@ func (cts *CreateTableStatement) statementNode() {}
 func (cts *CreateTableStatement) String() string {
 	var out strings.Builder
 	out.WriteString(fmt.Sprintf("CREATE TABLE %s (", cts.Name))
-	
+
 	var parts []string
 	for _, col := range cts.Columns {
 		parts = append(parts, col.String())
@@ -86,7 +86,7 @@ func (cts *CreateTableStatement) String() string {
 	for _, constraint := range cts.Constraints {
 		parts = append(parts, constraint.String())
 	}
-	
+
 	out.WriteString(strings.Join(parts, ", "))
 	out.WriteString(")")
 	return out.String()
@@ -118,7 +118,7 @@ func (cis *CreateIndexStatement) String() string {
 	if cis.Unique {
 		unique = "UNIQUE "
 	}
-	return fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", 
+	return fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)",
 		unique, cis.Name, cis.Table, strings.Join(cis.Columns, ", "))
 }
 func (cis *CreateIndexStatement) Type() string { return "CreateIndexStatement" }
@@ -138,52 +138,52 @@ func (dis *DropIndexStatement) Type() string { return "DropIndexStatement" }
 
 // SelectStatement represents SELECT statement
 type SelectStatement struct {
-	Distinct    bool
-	Columns     []Expression
-	From        *FromClause
-	Where       Expression
-	GroupBy     []Expression
-	Having      Expression
-	OrderBy     []*OrderByClause
-	Limit       Expression
-	Offset      Expression
-	Joins       []*JoinClause
+	Distinct bool
+	Columns  []Expression
+	From     *FromClause
+	Where    Expression
+	GroupBy  []Expression
+	Having   Expression
+	OrderBy  []*OrderByClause
+	Limit    Expression
+	Offset   Expression
+	Joins    []*JoinClause
 }
 
 func (ss *SelectStatement) statementNode() {}
 func (ss *SelectStatement) String() string {
 	var out strings.Builder
-	
+
 	out.WriteString("SELECT ")
 	if ss.Distinct {
 		out.WriteString("DISTINCT ")
 	}
-	
+
 	// Columns
 	var colStrs []string
 	for _, col := range ss.Columns {
 		colStrs = append(colStrs, col.String())
 	}
 	out.WriteString(strings.Join(colStrs, ", "))
-	
+
 	// FROM clause
 	if ss.From != nil {
 		out.WriteString(" ")
 		out.WriteString(ss.From.String())
 	}
-	
+
 	// JOINs
 	for _, join := range ss.Joins {
 		out.WriteString(" ")
 		out.WriteString(join.String())
 	}
-	
+
 	// WHERE clause
 	if ss.Where != nil {
 		out.WriteString(" WHERE ")
 		out.WriteString(ss.Where.String())
 	}
-	
+
 	// GROUP BY clause
 	if len(ss.GroupBy) > 0 {
 		out.WriteString(" GROUP BY ")
@@ -193,13 +193,13 @@ func (ss *SelectStatement) String() string {
 		}
 		out.WriteString(strings.Join(groupStrs, ", "))
 	}
-	
+
 	// HAVING clause
 	if ss.Having != nil {
 		out.WriteString(" HAVING ")
 		out.WriteString(ss.Having.String())
 	}
-	
+
 	// ORDER BY clause
 	if len(ss.OrderBy) > 0 {
 		out.WriteString(" ORDER BY ")
@@ -209,19 +209,19 @@ func (ss *SelectStatement) String() string {
 		}
 		out.WriteString(strings.Join(orderStrs, ", "))
 	}
-	
+
 	// LIMIT clause
 	if ss.Limit != nil {
 		out.WriteString(" LIMIT ")
 		out.WriteString(ss.Limit.String())
 	}
-	
+
 	// OFFSET clause
 	if ss.Offset != nil {
 		out.WriteString(" OFFSET ")
 		out.WriteString(ss.Offset.String())
 	}
-	
+
 	return out.String()
 }
 func (ss *SelectStatement) Type() string { return "SelectStatement" }
@@ -237,15 +237,15 @@ func (is *InsertStatement) statementNode() {}
 func (is *InsertStatement) String() string {
 	var out strings.Builder
 	out.WriteString(fmt.Sprintf("INSERT INTO %s", is.Table))
-	
+
 	if len(is.Columns) > 0 {
 		out.WriteString(" (")
 		out.WriteString(strings.Join(is.Columns, ", "))
 		out.WriteString(")")
 	}
-	
+
 	out.WriteString(" VALUES ")
-	
+
 	var valueStrs []string
 	for _, valueRow := range is.Values {
 		var rowStrs []string
@@ -255,7 +255,7 @@ func (is *InsertStatement) String() string {
 		valueStrs = append(valueStrs, "("+strings.Join(rowStrs, ", ")+")")
 	}
 	out.WriteString(strings.Join(valueStrs, ", "))
-	
+
 	return out.String()
 }
 func (is *InsertStatement) Type() string { return "InsertStatement" }
@@ -271,18 +271,18 @@ func (us *UpdateStatement) statementNode() {}
 func (us *UpdateStatement) String() string {
 	var out strings.Builder
 	out.WriteString(fmt.Sprintf("UPDATE %s SET ", us.Table))
-	
+
 	var assignStrs []string
 	for _, assign := range us.Assignments {
 		assignStrs = append(assignStrs, assign.String())
 	}
 	out.WriteString(strings.Join(assignStrs, ", "))
-	
+
 	if us.Where != nil {
 		out.WriteString(" WHERE ")
 		out.WriteString(us.Where.String())
 	}
-	
+
 	return out.String()
 }
 func (us *UpdateStatement) Type() string { return "UpdateStatement" }
@@ -297,15 +297,44 @@ func (ds *DeleteStatement) statementNode() {}
 func (ds *DeleteStatement) String() string {
 	var out strings.Builder
 	out.WriteString(fmt.Sprintf("DELETE FROM %s", ds.Table))
-	
+
 	if ds.Where != nil {
 		out.WriteString(" WHERE ")
 		out.WriteString(ds.Where.String())
 	}
-	
+
 	return out.String()
 }
 func (ds *DeleteStatement) Type() string { return "DeleteStatement" }
+
+// CreateViewStatement represents CREATE VIEW statement
+type CreateViewStatement struct {
+	Name       string
+	Columns    []string // Optional column list
+	Query      *SelectStatement
+	Definition string // Raw SQL for the view
+}
+
+func (cvs *CreateViewStatement) statementNode() {}
+func (cvs *CreateViewStatement) String() string {
+	if len(cvs.Columns) > 0 {
+		return fmt.Sprintf("CREATE VIEW %s (%s) AS %s",
+			cvs.Name, strings.Join(cvs.Columns, ", "), cvs.Query.String())
+	}
+	return fmt.Sprintf("CREATE VIEW %s AS %s", cvs.Name, cvs.Query.String())
+}
+func (cvs *CreateViewStatement) Type() string { return "CreateViewStatement" }
+
+// DropViewStatement represents DROP VIEW statement
+type DropViewStatement struct {
+	Name string
+}
+
+func (dvs *DropViewStatement) statementNode() {}
+func (dvs *DropViewStatement) String() string {
+	return fmt.Sprintf("DROP VIEW %s", dvs.Name)
+}
+func (dvs *DropViewStatement) Type() string { return "DropViewStatement" }
 
 // ==================== Expressions ====================
 
@@ -315,8 +344,8 @@ type Identifier struct {
 }
 
 func (i *Identifier) expressionNode() {}
-func (i *Identifier) String() string { return i.Value }
-func (i *Identifier) Type() string   { return "Identifier" }
+func (i *Identifier) String() string  { return i.Value }
+func (i *Identifier) Type() string    { return "Identifier" }
 
 // Literal represents a literal value
 type Literal struct {
@@ -373,18 +402,18 @@ func (fc *FunctionCall) String() string {
 	var out strings.Builder
 	out.WriteString(fc.Name)
 	out.WriteString("(")
-	
+
 	if fc.Distinct {
 		out.WriteString("DISTINCT ")
 	}
-	
+
 	var argStrs []string
 	for _, arg := range fc.Arguments {
 		argStrs = append(argStrs, arg.String())
 	}
 	out.WriteString(strings.Join(argStrs, ", "))
 	out.WriteString(")")
-	
+
 	return out.String()
 }
 func (fc *FunctionCall) Type() string { return "FunctionCall" }
@@ -429,17 +458,17 @@ func (jc *JoinClause) String() string {
 	out.WriteString(jc.Type)
 	out.WriteString(" JOIN ")
 	out.WriteString(jc.Table)
-	
+
 	if jc.Alias != "" {
 		out.WriteString(" AS ")
 		out.WriteString(jc.Alias)
 	}
-	
+
 	if jc.Condition != nil {
 		out.WriteString(" ON ")
 		out.WriteString(jc.Condition.String())
 	}
-	
+
 	return out.String()
 }
 
@@ -474,7 +503,7 @@ func (cd *ColumnDefinition) String() string {
 	out.WriteString(cd.Name)
 	out.WriteString(" ")
 	out.WriteString(cd.DataType.String())
-	
+
 	if cd.Nullable != nil {
 		if *cd.Nullable {
 			out.WriteString(" NULL")
@@ -482,24 +511,24 @@ func (cd *ColumnDefinition) String() string {
 			out.WriteString(" NOT NULL")
 		}
 	}
-	
+
 	if cd.Default != nil {
 		out.WriteString(" DEFAULT ")
 		out.WriteString(cd.Default.String())
 	}
-	
+
 	if cd.AutoIncrement {
 		out.WriteString(" AUTO_INCREMENT")
 	}
-	
+
 	if cd.PrimaryKey {
 		out.WriteString(" PRIMARY KEY")
 	}
-	
+
 	if cd.Unique {
 		out.WriteString(" UNIQUE")
 	}
-	
+
 	return out.String()
 }
 
@@ -514,7 +543,7 @@ type DataTypeDefinition struct {
 func (dtd *DataTypeDefinition) String() string {
 	var out strings.Builder
 	out.WriteString(dtd.Type)
-	
+
 	if dtd.Size != nil {
 		out.WriteString(fmt.Sprintf("(%d", *dtd.Size))
 		if dtd.Scale != nil {
@@ -528,7 +557,7 @@ func (dtd *DataTypeDefinition) String() string {
 		}
 		out.WriteString(")")
 	}
-	
+
 	return out.String()
 }
 
@@ -546,13 +575,13 @@ type ConstraintDefinition struct {
 
 func (cd *ConstraintDefinition) String() string {
 	var out strings.Builder
-	
+
 	if cd.Name != "" {
 		out.WriteString("CONSTRAINT ")
 		out.WriteString(cd.Name)
 		out.WriteString(" ")
 	}
-	
+
 	switch cd.Type {
 	case "PRIMARY KEY":
 		out.WriteString("PRIMARY KEY (")
@@ -585,7 +614,7 @@ func (cd *ConstraintDefinition) String() string {
 		}
 		out.WriteString(")")
 	}
-	
+
 	return out.String()
 }
 
@@ -627,18 +656,18 @@ func ConvertColumnDefinition(cd *ColumnDefinition) types.Column {
 		IsUnique:      cd.Unique,
 		AutoIncrement: cd.AutoIncrement,
 	}
-	
+
 	if cd.DataType.Size != nil {
 		column.Size = *cd.DataType.Size
 	}
-	
+
 	if cd.Default != nil {
 		// Convert default value expression to actual value
 		if lit, ok := cd.Default.(*Literal); ok {
 			column.Default = lit.Value
 		}
 	}
-	
+
 	return column
 }
 
@@ -652,7 +681,7 @@ func ConvertConstraintDefinition(cd *ConstraintDefinition) types.Constraint {
 		OnDeleteRule: cd.OnDelete,
 		OnUpdateRule: cd.OnUpdate,
 	}
-	
+
 	switch cd.Type {
 	case "PRIMARY KEY":
 		constraint.Type = types.PrimaryKeyConstraint
@@ -666,7 +695,7 @@ func ConvertConstraintDefinition(cd *ConstraintDefinition) types.Constraint {
 			constraint.CheckExpr = cd.CheckExpr.String()
 		}
 	}
-	
+
 	return constraint
 }
 
@@ -699,6 +728,14 @@ func (s *DeleteStatement) Accept(v Visitor) interface{} {
 	return v.VisitStatement(s)
 }
 
+func (s *CreateViewStatement) Accept(v Visitor) interface{} {
+	return v.VisitStatement(s)
+}
+
+func (s *DropViewStatement) Accept(v Visitor) interface{} {
+	return v.VisitStatement(s)
+}
+
 // Accept method for expressions
 func (e *Identifier) Accept(v Visitor) interface{} {
 	return v.VisitExpression(e)
@@ -721,7 +758,7 @@ func (e *FunctionCall) Accept(v Visitor) interface{} {
 // GetTableNames extracts all table names referenced in a statement
 func GetTableNames(stmt Statement) []string {
 	var tables []string
-	
+
 	switch s := stmt.(type) {
 	case *CreateTableStatement:
 		tables = append(tables, s.Name)
@@ -739,14 +776,14 @@ func GetTableNames(stmt Statement) []string {
 	case *DeleteStatement:
 		tables = append(tables, s.Table)
 	}
-	
+
 	return tables
 }
 
 // GetColumnNames extracts all column names referenced in a statement
 func GetColumnNames(stmt Statement) []string {
 	var columns []string
-	
+
 	switch s := stmt.(type) {
 	case *CreateTableStatement:
 		for _, col := range s.Columns {
@@ -759,7 +796,7 @@ func GetColumnNames(stmt Statement) []string {
 			columns = append(columns, assign.Column)
 		}
 	}
-	
+
 	return columns
 }
 
@@ -777,7 +814,7 @@ func IsReadOnlyStatement(stmt Statement) bool {
 func IsDDLStatement(stmt Statement) bool {
 	switch stmt.(type) {
 	case *CreateTableStatement, *DropTableStatement, *CreateIndexStatement, *DropIndexStatement,
-		 *CreateDatabaseStatement, *DropDatabaseStatement:
+		*CreateDatabaseStatement, *DropDatabaseStatement, *CreateViewStatement, *DropViewStatement:
 		return true
 	default:
 		return false
