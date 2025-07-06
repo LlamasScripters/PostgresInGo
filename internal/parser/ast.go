@@ -347,6 +347,16 @@ func (i *Identifier) expressionNode() {}
 func (i *Identifier) String() string  { return i.Value }
 func (i *Identifier) Type() string    { return "Identifier" }
 
+// QualifiedIdentifier represents a qualified identifier (table.column)
+type QualifiedIdentifier struct {
+	Table  string
+	Column string
+}
+
+func (qi *QualifiedIdentifier) expressionNode() {}
+func (qi *QualifiedIdentifier) String() string  { return fmt.Sprintf("%s.%s", qi.Table, qi.Column) }
+func (qi *QualifiedIdentifier) Type() string    { return "QualifiedIdentifier" }
+
 // Literal represents a literal value
 type Literal struct {
 	Value interface{}

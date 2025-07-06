@@ -170,11 +170,8 @@ func NewStorageManager(dataDir string) (*StorageManager, error) {
 		nextTupleID:   1,
 	}
 
-	// Try to load existing metadata (commented out for now)
-	// sm.loadMetadata(dataDir)
-
-	// Load views metadata (commented out for now)
-	// sm.loadViewsMetadata(dataDir)
+	// Load existing metadata
+	sm.loadMetadata(dataDir)
 
 	// Load views metadata
 	sm.loadViewsMetadata(dataDir)
@@ -201,8 +198,8 @@ func (sm *StorageManager) CreateTable(name string, schema types.Schema) error {
 
 	sm.tables[name] = table
 
-	// Save metadata after creating table (commented out for now)
-	// sm.saveMetadata()
+	// Save metadata after creating table
+	sm.saveMetadata()
 
 	return nil
 }
@@ -668,9 +665,48 @@ func (sm *StorageManager) loadViewsMetadata(dataDir string) error {
 
 // Close closes the storage manager
 func (sm *StorageManager) Close() error {
-	// Save metadata before closing (commented out for now)
-	// sm.saveMetadata()
+	// Save metadata before closing
+	sm.saveMetadata()
 	return sm.diskManager.Close()
+}
+
+// saveMetadata saves table metadata to disk
+func (sm *StorageManager) saveMetadata() {
+	metadataFile := filepath.Join(filepath.Dir(sm.diskManager.file.Name()), "metadata.json")
+	
+	data, err := json.MarshalIndent(sm.tables, "", "  ")
+	if err != nil {
+		fmt.Printf("Error marshaling table metadata: %v\n", err)
+		return
+	}
+
+	err = os.WriteFile(metadataFile, data, 0644)
+	if err != nil {
+		fmt.Printf("Error saving table metadata: %v\n", err)
+	}
+}
+
+// loadMetadata loads table metadata from disk
+func (sm *StorageManager) loadMetadata(dataDir string) {
+	metadataFile := filepath.Join(dataDir, "metadata.json")
+
+	data, err := os.ReadFile(metadataFile)
+	if err != nil {
+		// File doesn't exist, start fresh
+		return
+	}
+
+	var tables map[string]*types.Table
+	err = json.Unmarshal(data, &tables)
+	if err != nil {
+		fmt.Printf("Error loading table metadata (will start fresh): %v\n", err)
+		// If metadata is corrupted, backup the old file and start fresh
+		backupFile := metadataFile + ".backup"
+		os.Rename(metadataFile, backupFile)
+		return
+	}
+
+	sm.tables = tables
 }
 
 // Constraint validation functions

@@ -952,6 +952,22 @@ func (p *Parser) parsePrimaryExpression() Expression {
 			}
 		}
 
+		// Check for qualified identifier (table.column)
+		if p.current.Type == DOT {
+			p.nextToken() // consume DOT
+			if p.current.Type == IDENT {
+				column := p.current.Literal
+				p.nextToken()
+				return &QualifiedIdentifier{
+					Table:  name,
+					Column: column,
+				}
+			} else {
+				p.addError("expected column name after '.'")
+				return nil
+			}
+		}
+
 		return &Identifier{Value: name}
 
 	case INT:

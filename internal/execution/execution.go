@@ -253,10 +253,8 @@ func (op *NestedLoopJoinOperator) Next() (*types.Tuple, error) {
 			continue
 		}
 
-		// Create joined tuple (simplified)
-		joinedTuple := &types.Tuple{
-			Data: append(op.leftTuple.Data, rightTuple.Data...),
-		}
+		// Create joined tuple by merging the data properly
+		joinedTuple := op.createJoinedTuple(op.leftTuple, rightTuple)
 
 		return joinedTuple, nil
 	}
@@ -282,6 +280,75 @@ func (op *NestedLoopJoinOperator) GetSchema() types.Schema {
 	}
 	
 	return joinedSchema
+}
+
+// createJoinedTuple creates a proper joined tuple from left and right tuples
+func (op *NestedLoopJoinOperator) createJoinedTuple(leftTuple, rightTuple *types.Tuple) *types.Tuple {
+	// Deserialize both tuples to extract their data
+	leftData := op.deserializeTupleData(leftTuple.Data)
+	rightData := op.deserializeTupleData(rightTuple.Data)
+	
+	// Merge the data maps
+	joinedData := make(map[string]interface{})
+	for k, v := range leftData {
+		joinedData[k] = v
+	}
+	for k, v := range rightData {
+		joinedData[k] = v
+	}
+	
+	// Serialize the joined data
+	serializedData := op.serializeTupleData(joinedData)
+	
+	return &types.Tuple{
+		TID:  types.TupleID{PageID: leftTuple.TID.PageID, Offset: leftTuple.TID.Offset}, 
+		Data: serializedData,
+	}
+}
+
+// deserializeTupleData deserializes tuple data into a map (moved from JoinPredicate)
+func (op *NestedLoopJoinOperator) deserializeTupleData(data []byte) map[string]interface{} {
+	result := make(map[string]interface{})
+	dataStr := string(data)
+	
+	// Split by semicolon to get key-value pairs
+	pairs := strings.Split(dataStr, ";")
+	for _, pair := range pairs {
+		if len(pair) == 0 {
+			continue
+		}
+		
+		// Split by colon to get key and value
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			
+			// Try to parse as number
+			if intVal, err := strconv.Atoi(value); err == nil {
+				result[key] = intVal
+			} else if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
+				result[key] = floatVal
+			} else if value == "true" {
+				result[key] = true
+			} else if value == "false" {
+				result[key] = false
+			} else {
+				result[key] = value
+			}
+		}
+	}
+	
+	return result
+}
+
+// serializeTupleData serializes a data map back to bytes
+func (op *NestedLoopJoinOperator) serializeTupleData(data map[string]interface{}) []byte {
+	var parts []string
+	for key, value := range data {
+		parts = append(parts, fmt.Sprintf("%s:%v", key, value))
+	}
+	return []byte(strings.Join(parts, ";"))
 }
 
 // HashJoinOperator performs hash join
