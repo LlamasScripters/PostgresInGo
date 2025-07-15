@@ -4,7 +4,7 @@
 *.dll
 *.so
 *.dylib
-postgres-engine
+PostgresInGo
 
 # Example binaries
 sql_demo

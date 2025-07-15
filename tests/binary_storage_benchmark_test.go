@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/esgi-git/postgres-engine/internal/engine"
-	"github.com/esgi-git/postgres-engine/internal/types"
+	"github.com/LlamasScripters/PostgresInGo/internal/engine"
+	"github.com/LlamasScripters/PostgresInGo/internal/types"
 )
 
 // BenchmarkStorageComparison compares JSON vs Binary storage performance
@@ -44,7 +44,7 @@ func benchmarkStorageMode(b *testing.B, mode engine.StorageMode, rowCount, colCo
 	// Create engine with specified storage mode
 	var eng *engine.PostgresEngine
 	var err error
-	
+
 	config := engine.EngineConfig{
 		DataDir:     dataDir,
 		StorageMode: mode,
@@ -85,7 +85,7 @@ func benchmarkStorageMode(b *testing.B, mode engine.StorageMode, rowCount, colCo
 			data := generateBenchmarkData(row, colCount)
 			eng.Insert("benchmark_table", data)
 		}
-		
+
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_, err := eng.Select("benchmark_table", nil)
@@ -99,7 +99,7 @@ func benchmarkStorageMode(b *testing.B, mode engine.StorageMode, rowCount, colCo
 // createBenchmarkSchema creates a schema for benchmarking
 func createBenchmarkSchema(colCount int) types.Schema {
 	columns := make([]types.Column, colCount)
-	
+
 	// Create mixed column types for realistic testing
 	for i := 0; i < colCount; i++ {
 		switch i % 5 {
@@ -136,14 +136,14 @@ func createBenchmarkSchema(colCount int) types.Schema {
 			}
 		}
 	}
-	
+
 	return types.Schema{Columns: columns}
 }
 
 // generateBenchmarkData generates test data for benchmarking
 func generateBenchmarkData(row, colCount int) map[string]any {
 	data := make(map[string]any)
-	
+
 	for i := 0; i < colCount; i++ {
 		switch i % 5 {
 		case 0:
@@ -151,14 +151,14 @@ func generateBenchmarkData(row, colCount int) map[string]any {
 		case 1:
 			data[fmt.Sprintf("name_%d", i)] = fmt.Sprintf("test_name_%d_%d", row, i)
 		case 2:
-			data[fmt.Sprintf("amount_%d", i)] = float64(row*100 + i) / 100.0
+			data[fmt.Sprintf("amount_%d", i)] = float64(row*100+i) / 100.0
 		case 3:
 			data[fmt.Sprintf("active_%d", i)] = (row+i)%2 == 0
 		case 4:
 			data[fmt.Sprintf("timestamp_%d", i)] = time.Now().Add(time.Duration(row*i) * time.Second)
 		}
 	}
-	
+
 	return data
 }
 
@@ -229,7 +229,7 @@ func BenchmarkSerializationSpeed(b *testing.B) {
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			// Test binary serialization speed  
+			// Test binary serialization speed
 			err := eng.Insert("test_table", testData)
 			if err != nil {
 				b.Fatalf("Insert failed: %v", err)
@@ -241,7 +241,7 @@ func BenchmarkSerializationSpeed(b *testing.B) {
 // BenchmarkMemoryUsage compares memory usage patterns
 func BenchmarkMemoryUsage(b *testing.B) {
 	rowCounts := []int{100, 500, 1000}
-	
+
 	for _, rowCount := range rowCounts {
 		b.Run(fmt.Sprintf("Rows_%d", rowCount), func(b *testing.B) {
 			b.Run("JSON_Memory", func(b *testing.B) {
@@ -286,7 +286,7 @@ func benchmarkMemoryUsage(b *testing.B, mode engine.StorageMode, rowCount int) {
 				b.Fatalf("Insert failed: %v", err)
 			}
 		}
-		
+
 		// Read all data back
 		_, err := eng.Select("memory_test", nil)
 		if err != nil {

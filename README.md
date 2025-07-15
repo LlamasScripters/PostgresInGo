@@ -54,7 +54,7 @@ Ce projet implémente un **database engine** compatible PostgreSQL développé e
 ## 🏗️ Architecture
 
 ```
-postgres-engine/
+PostgresInGo/
 ├── main.go                    # Application entry point
 ├── internal/
 │   ├── engine/               # Core database engine
@@ -95,7 +95,7 @@ postgres-engine/
 ### Installation
 ```bash
 git clone <repository-url>
-cd postgres-engine
+cd PostgresInGo
 go mod tidy
 ```
 
@@ -109,7 +109,7 @@ go run main.go
 package main
 
 import (
-    "github.com/esgi-git/postgres-engine/internal/engine"
+    "github.com/LlamasScripters/PostgresInGo/internal/engine"
 )
 
 func main() {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/esgi-git/postgres-engine/internal/types"
+	"github.com/LlamasScripters/PostgresInGo/internal/types"
 )
 
 // Node represents any node in the AST

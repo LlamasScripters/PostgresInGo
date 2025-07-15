@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/esgi-git/postgres-engine/internal/index"
-	"github.com/esgi-git/postgres-engine/internal/storage"
-	"github.com/esgi-git/postgres-engine/internal/types"
+	"github.com/LlamasScripters/PostgresInGo/internal/index"
+	"github.com/LlamasScripters/PostgresInGo/internal/storage"
+	"github.com/LlamasScripters/PostgresInGo/internal/types"
 )
 
 // Operator represents a query execution operator

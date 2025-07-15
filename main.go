@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/esgi-git/postgres-engine/internal/engine"
-	"github.com/esgi-git/postgres-engine/internal/types"
+	"github.com/LlamasScripters/PostgresInGo/internal/engine"
+	"github.com/LlamasScripters/PostgresInGo/internal/types"
 )
 
 func main() {

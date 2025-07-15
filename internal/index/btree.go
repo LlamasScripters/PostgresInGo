@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/esgi-git/postgres-engine/internal/types"
+	"github.com/LlamasScripters/PostgresInGo/internal/types"
 )
 
 // Comparator defines comparison function for keys

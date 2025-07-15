@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/esgi-git/postgres-engine/internal/engine"
+	"github.com/LlamasScripters/PostgresInGo/internal/engine"
 )
 
 func main() {

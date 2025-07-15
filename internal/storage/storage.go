@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/esgi-git/postgres-engine/internal/types"
+	"github.com/LlamasScripters/PostgresInGo/internal/types"
 )
 
 const (

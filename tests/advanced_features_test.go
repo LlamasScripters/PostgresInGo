@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/esgi-git/postgres-engine/internal/engine"
-	"github.com/esgi-git/postgres-engine/internal/types"
+	"github.com/LlamasScripters/PostgresInGo/internal/engine"
+	"github.com/LlamasScripters/PostgresInGo/internal/types"
 )
 
 // TestPrimaryKeyConstraints tests primary key constraints

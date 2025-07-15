@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/esgi-git/postgres-engine/internal/execution"
-	"github.com/esgi-git/postgres-engine/internal/parser"
-	"github.com/esgi-git/postgres-engine/internal/types"
+	"github.com/LlamasScripters/PostgresInGo/internal/execution"
+	"github.com/LlamasScripters/PostgresInGo/internal/parser"
+	"github.com/LlamasScripters/PostgresInGo/internal/types"
 )
 
 func TestAggregateFunctions(t *testing.T) {

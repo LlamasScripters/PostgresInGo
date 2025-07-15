@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/esgi-git/postgres-engine/internal/execution"
-	"github.com/esgi-git/postgres-engine/internal/index"
-	"github.com/esgi-git/postgres-engine/internal/parser"
-	"github.com/esgi-git/postgres-engine/internal/storage"
-	"github.com/esgi-git/postgres-engine/internal/transaction"
-	"github.com/esgi-git/postgres-engine/internal/types"
+	"github.com/LlamasScripters/PostgresInGo/internal/execution"
+	"github.com/LlamasScripters/PostgresInGo/internal/index"
+	"github.com/LlamasScripters/PostgresInGo/internal/parser"
+	"github.com/LlamasScripters/PostgresInGo/internal/storage"
+	"github.com/LlamasScripters/PostgresInGo/internal/transaction"
+	"github.com/LlamasScripters/PostgresInGo/internal/types"
 )
 
 // StorageMode defines the storage format type

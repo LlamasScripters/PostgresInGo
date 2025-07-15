@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"unsafe"
 
-	"github.com/esgi-git/postgres-engine/internal/types"
+	"github.com/LlamasScripters/PostgresInGo/internal/types"
 )
 
 // Cache line size for modern CPUs (64 bytes)

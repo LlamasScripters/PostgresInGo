@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/esgi-git/postgres-engine/internal/parser"
+	"github.com/LlamasScripters/PostgresInGo/internal/parser"
 )
 
 // TestViewParsing tests just the parsing of view statements
