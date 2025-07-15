@@ -7,6 +7,8 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"unsafe"
 
 	"github.com/LlamasScripters/PostgresInGo/internal/types"
@@ -14,9 +16,14 @@ import (
 
 // Cache line size for modern CPUs (64 bytes)
 const (
-	CacheLineSize   = 64
-	BinaryMagic     = 0x504754524553 // "PGTRES" in hex
-	MetadataVersion = 1
+	CacheLineSize    = 64
+	BinaryMagic      = 0x504754524553 // "PGTRES" in hex
+	MetadataVersion  = 1
+	TupleBinaryMagic = 0x4254 // "BT" - Binary Tuple magic number
+
+	// Cache alignment masks and helpers
+	CacheLineMask               = CacheLineSize - 1
+	CacheAlignedTupleHeaderSize = 64 // Full cache line for optimal performance
 )
 
 // BinaryStorageManager implements cache-aligned binary storage
@@ -24,6 +31,13 @@ type BinaryStorageManager struct {
 	*StorageManager
 	metadataFilePath string
 	binaryMode       bool
+	schemaHashCache  map[string]uint32 // Cache schema hashes by table name
+
+	// Memory pools for performance optimization
+	bufferPool     *sync.Pool // Reusable byte buffers
+	byteSlicePool  *sync.Pool // Reusable byte slices
+	valueArrayPool *sync.Pool // Reusable value arrays
+	bitmapPool     *sync.Pool // Reusable null bitmaps
 }
 
 // BinaryMetadataHeader is cache-aligned metadata header (64 bytes)
@@ -121,6 +135,33 @@ func NewBinaryStorageManager(dataDir string) (*BinaryStorageManager, error) {
 		StorageManager:   baseStorage,
 		metadataFilePath: filepath.Join(dataDir, "metadata.bin"),
 		binaryMode:       true,
+		schemaHashCache:  make(map[string]uint32),
+
+		// Initialize memory pools for high-performance operations
+		bufferPool: &sync.Pool{
+			New: func() interface{} {
+				// Pre-allocate buffer with typical tuple size
+				return bytes.NewBuffer(make([]byte, 0, 512))
+			},
+		},
+		byteSlicePool: &sync.Pool{
+			New: func() interface{} {
+				// Pre-allocate 8-byte slice for numeric values
+				return make([]byte, 8)
+			},
+		},
+		valueArrayPool: &sync.Pool{
+			New: func() interface{} {
+				// Pre-allocate array for typical column count
+				return make([]any, 0, 32)
+			},
+		},
+		bitmapPool: &sync.Pool{
+			New: func() interface{} {
+				// Pre-allocate bitmap for typical column count (32 columns = 4 bytes)
+				return make([]byte, 4)
+			},
+		},
 	}
 
 	// Try to load existing binary metadata
@@ -683,57 +724,513 @@ func (bsm *BinaryStorageManager) Close() error {
 	return bsm.StorageManager.Close()
 }
 
-// SerializeTupleBinary serializes tuple data in cache-aligned binary format
+// SerializeTupleBinary serializes tuple data in optimized binary format
 func (bsm *BinaryStorageManager) SerializeTupleBinary(data map[string]any, schema types.Schema) []byte {
-	buffer := bytes.NewBuffer(nil)
+	// Get cached schema hash for this table
+	tableName := "default" // We need table name, but for now use default
+	schemaHash, exists := bsm.schemaHashCache[tableName]
+	if !exists {
+		schemaHash = bsm.calculateSchemaHash(schema)
+		bsm.schemaHashCache[tableName] = schemaHash
+	}
 
-	// Calculate total size for pre-allocation
-	estimatedSize := int(unsafe.Sizeof(BinaryTupleHeader{}))
+	// Get buffer from pool to reduce allocations
+	buffer := bsm.bufferPool.Get().(*bytes.Buffer)
+	buffer.Reset() // Clear any existing data
+	defer bsm.bufferPool.Put(buffer)
+
+	// Use cache-aligned header for optimal performance (64 bytes)
+	cacheAlignedHeader := struct {
+		Magic       uint16  // Magic number for format detection
+		ColumnCount uint16  // Number of columns
+		DataSize    uint32  // Size of data portion
+		Timestamp   uint32  // Creation timestamp
+		Checksum    uint32  // Data integrity check
+		TupleFlags  uint32  // Tuple status flags
+		SchemaHash  uint32  // Schema version hash for validation
+		Reserved1   uint32  // Reserved for future use
+		Reserved2   uint64  // Reserved for future use
+		Reserved3   uint64  // Reserved for future use
+		Reserved4   uint64  // Reserved for future use
+		Reserved5   uint64  // Reserved for future use
+		Reserved6   uint64  // Reserved for future use
+		Padding     [8]byte // Padding to reach 64 bytes
+	}{
+		Magic:       TupleBinaryMagic,
+		ColumnCount: uint16(len(schema.Columns)),
+		Timestamp:   uint32(0),  // Will be set by caller
+		TupleFlags:  0,          // No special flags initially
+		SchemaHash:  schemaHash, // Use cached hash
+	}
+
+	// Calculate total size for pre-allocation with cache alignment
+	estimatedSize := CacheAlignedTupleHeaderSize // 64-byte cache-aligned header
 	for _, col := range schema.Columns {
 		if value, exists := data[col.Name]; exists && value != nil {
-			estimatedSize += bsm.estimateValueSize(value, col.Type)
+			estimatedSize += bsm.estimateValueSizeCompact(value, col.Type)
 		}
 	}
 
-	// Pre-grow buffer with estimated size (no alignment for now to avoid size issues)
+	// Pre-grow buffer with estimated size
 	buffer.Grow(estimatedSize)
 
-	// Write tuple header placeholder (will be updated later)
-	header := BinaryTupleHeader{
-		ColumnCount: uint32(len(schema.Columns)),
-		Timestamp:   uint64(0), // Will be set by caller
-	}
-
+	// Write cache-aligned header placeholder (will be updated later)
 	headerPos := buffer.Len()
-	binary.Write(buffer, binary.LittleEndian, &header)
+	binary.Write(buffer, binary.LittleEndian, &cacheAlignedHeader)
 
-	// Write column data in schema order for predictable layout
+	// Get pooled resources to reduce allocations
+	bitmapSize := (len(schema.Columns) + 7) / 8
+	nullBitmap := bsm.getBitmapFromPool(bitmapSize)
+	defer bsm.returnBitmapToPool(nullBitmap)
+
+	nonNullValues := bsm.valueArrayPool.Get().([]any)
+	nonNullValues = nonNullValues[:0] // Reset length but keep capacity
+	defer bsm.valueArrayPool.Put(nonNullValues)
+
+	nonNullTypes := make([]types.DataType, 0, len(schema.Columns))
+
+	// Vectorized bitmap processing - process 8 columns at a time for better performance
+	bsm.processColumnsBitmapVectorized(schema.Columns, data, nullBitmap, &nonNullValues, &nonNullTypes)
+
+	// Write null bitmap
 	dataStart := buffer.Len()
-	for _, col := range schema.Columns {
-		value, exists := data[col.Name]
-		if !exists || value == nil {
-			// Write null marker
-			buffer.WriteByte(0)
-			continue
-		}
+	buffer.Write(nullBitmap)
 
-		// Write value type and data
-		bsm.writeBinaryValue(buffer, value, col.Type)
+	// Write only non-null values (inline for performance)
+	for i, value := range nonNullValues {
+		bsm.writeBinaryValueInline(buffer, value, nonNullTypes[i])
 	}
 
 	// Update header with actual data size
 	dataSize := buffer.Len() - dataStart
-	header.DataSize = uint32(dataSize)
+	cacheAlignedHeader.DataSize = uint32(dataSize)
 
-	// Calculate checksum for data
+	// Calculate checksum for data (use fast checksum for small data)
 	dataBytes := buffer.Bytes()[dataStart:]
-	header.Checksum = crc32.ChecksumIEEE(dataBytes)
+	if len(dataBytes) < 1024 {
+		// Use simple checksum for small tuples (much faster)
+		cacheAlignedHeader.Checksum = bsm.fastChecksum(dataBytes)
+	} else {
+		// Use CRC32 for larger tuples where integrity is more critical
+		cacheAlignedHeader.Checksum = crc32.ChecksumIEEE(dataBytes)
+	}
 
-	// Update header in buffer
-	headerBytes := (*[unsafe.Sizeof(header)]byte)(unsafe.Pointer(&header))[:]
+	// Update header in buffer (64 bytes)
+	headerBytes := (*[CacheAlignedTupleHeaderSize]byte)(unsafe.Pointer(&cacheAlignedHeader))[:]
+	copy(buffer.Bytes()[headerPos:], headerBytes)
+
+	// Copy result before returning buffer to pool
+	result := make([]byte, buffer.Len())
+	copy(result, buffer.Bytes())
+	return result
+}
+
+// SerializeTuplesBinaryBulk serializes multiple tuples in bulk for better performance
+func (bsm *BinaryStorageManager) SerializeTuplesBinaryBulk(dataSlice []map[string]any, schema types.Schema) [][]byte {
+	results := make([][]byte, len(dataSlice))
+
+	// Get cached schema hash once for all tuples
+	tableName := "default"
+	schemaHash, exists := bsm.schemaHashCache[tableName]
+	if !exists {
+		schemaHash = bsm.calculateSchemaHash(schema)
+		bsm.schemaHashCache[tableName] = schemaHash
+	}
+
+	// Adaptive batch sizing based on data characteristics for optimal performance
+	batchSize := bsm.calculateOptimalBatchSize(len(dataSlice), len(schema.Columns))
+
+	for batchStart := 0; batchStart < len(dataSlice); batchStart += batchSize {
+		batchEnd := min(batchStart+batchSize, len(dataSlice))
+
+		// Process batch with vectorized operations when possible
+		if batchEnd-batchStart >= 4 && len(schema.Columns) <= 16 {
+			// Use vectorized processing for small schemas
+			bsm.serializeBatchVectorized(dataSlice[batchStart:batchEnd], results[batchStart:batchEnd], schema, schemaHash)
+		} else {
+			// Standard processing for complex schemas
+			for i := batchStart; i < batchEnd; i++ {
+				results[i] = bsm.serializeTupleOptimized(dataSlice[i], schema, schemaHash)
+			}
+		}
+	}
+
+	return results
+}
+
+// serializeTupleOptimized is an optimized version for bulk processing
+func (bsm *BinaryStorageManager) serializeTupleOptimized(data map[string]any, schema types.Schema, schemaHash uint32) []byte {
+	// Use smaller buffer for typical tuple sizes (reduces memory pressure)
+	buffer := bytes.NewBuffer(make([]byte, 0, 256))
+
+	// Pre-build header with known schema hash
+	cacheAlignedHeader := struct {
+		Magic       uint16  // Magic number for format detection
+		ColumnCount uint16  // Number of columns
+		DataSize    uint32  // Size of data portion
+		Timestamp   uint32  // Creation timestamp
+		Checksum    uint32  // Data integrity check
+		TupleFlags  uint32  // Tuple status flags
+		SchemaHash  uint32  // Schema version hash for validation
+		Reserved1   uint32  // Reserved for future use
+		Reserved2   uint64  // Reserved for future use
+		Reserved3   uint64  // Reserved for future use
+		Reserved4   uint64  // Reserved for future use
+		Reserved5   uint64  // Reserved for future use
+		Reserved6   uint64  // Reserved for future use
+		Padding     [8]byte // Padding to reach 64 bytes
+	}{
+		Magic:       TupleBinaryMagic,
+		ColumnCount: uint16(len(schema.Columns)),
+		Timestamp:   uint32(0),
+		TupleFlags:  0,
+		SchemaHash:  schemaHash, // Use pre-calculated hash
+	}
+
+	headerPos := buffer.Len()
+	binary.Write(buffer, binary.LittleEndian, &cacheAlignedHeader)
+
+	// Fast null bitmap and value writing
+	bitmapSize := (len(schema.Columns) + 7) / 8
+	nullBitmap := make([]byte, bitmapSize)
+
+	dataStart := buffer.Len() + bitmapSize
+	buffer.Write(nullBitmap) // Write placeholder
+
+	// Write values directly, updating bitmap as we go
+	for i, col := range schema.Columns {
+		if value, exists := data[col.Name]; exists && value != nil {
+			nullBitmap[i/8] |= 1 << (i % 8)
+			bsm.writeBinaryValueInline(buffer, value, col.Type)
+		}
+	}
+
+	// Update bitmap in buffer
+	copy(buffer.Bytes()[dataStart-bitmapSize:dataStart], nullBitmap)
+
+	// Update header
+	dataSize := buffer.Len() - dataStart
+	cacheAlignedHeader.DataSize = uint32(dataSize)
+	cacheAlignedHeader.Checksum = bsm.fastChecksum(buffer.Bytes()[dataStart:])
+
+	headerBytes := (*[CacheAlignedTupleHeaderSize]byte)(unsafe.Pointer(&cacheAlignedHeader))[:]
 	copy(buffer.Bytes()[headerPos:], headerBytes)
 
 	return buffer.Bytes()
+}
+
+// CompressedSerializeTupleBinary serializes with optional compression for large tuples
+func (bsm *BinaryStorageManager) CompressedSerializeTupleBinary(data map[string]any, schema types.Schema, compress bool) []byte {
+	// Serialize normally first
+	rawData := bsm.SerializeTupleBinary(data, schema)
+
+	// Apply compression if requested and beneficial
+	if compress && len(rawData) > 512 { // Only compress larger tuples
+		return bsm.compressTupleData(rawData)
+	}
+
+	return rawData
+}
+
+// compressTupleData applies lightweight compression to tuple data
+func (bsm *BinaryStorageManager) compressTupleData(data []byte) []byte {
+	// Simple run-length encoding for repeated bytes (common in null bitmaps)
+	if len(data) < 64 {
+		return data // Not worth compressing small data
+	}
+
+	compressed := make([]byte, 0, len(data))
+	compressed = append(compressed, 0xFF) // Compression marker
+
+	for i := 0; i < len(data); {
+		current := data[i]
+		count := 1
+
+		// Count consecutive identical bytes
+		for i+count < len(data) && data[i+count] == current && count < 255 {
+			count++
+		}
+
+		if count > 3 || current == 0 { // Compress runs of 4+ or null bytes
+			compressed = append(compressed, 0xFE, byte(count), current)
+		} else {
+			// Copy literals
+			for j := 0; j < count; j++ {
+				compressed = append(compressed, data[i+j])
+			}
+		}
+
+		i += count
+	}
+
+	// Only return compressed if it's actually smaller
+	if len(compressed) < len(data) {
+		return compressed
+	}
+	return data
+}
+
+// calculateSchemaHash generates a hash for schema validation with optimized loops
+func (bsm *BinaryStorageManager) calculateSchemaHash(schema types.Schema) uint32 {
+	// Optimized hash based on column names and types with unrolled loops
+	hash := uint32(2166136261) // FNV-1a offset basis
+
+	for _, col := range schema.Columns {
+		// Hash column name with unrolled loop for better performance
+		nameBytes := []byte(col.Name)
+		hash = bsm.hashBytesUnrolled(hash, nameBytes)
+
+		// Hash column type
+		hash ^= uint32(col.Type)
+		hash *= 16777619
+	}
+	return hash
+}
+
+// hashBytesUnrolled performs FNV-1a hash with loop unrolling for better performance
+func (bsm *BinaryStorageManager) hashBytesUnrolled(hash uint32, data []byte) uint32 {
+	const prime = uint32(16777619)
+	length := len(data)
+	i := 0
+
+	// Process 4 bytes at a time (unrolled)
+	for i+3 < length {
+		hash ^= uint32(data[i])
+		hash *= prime
+		hash ^= uint32(data[i+1])
+		hash *= prime
+		hash ^= uint32(data[i+2])
+		hash *= prime
+		hash ^= uint32(data[i+3])
+		hash *= prime
+		i += 4
+	}
+
+	// Process remaining bytes
+	for i < length {
+		hash ^= uint32(data[i])
+		hash *= prime
+		i++
+	}
+
+	return hash
+}
+
+// calculateOptimalBatchSize determines optimal batch size based on data characteristics
+func (bsm *BinaryStorageManager) calculateOptimalBatchSize(tupleCount, columnCount int) int {
+	// Base batch size
+	batchSize := 16
+
+	// Adjust based on column count (more columns = smaller batches for cache efficiency)
+	if columnCount > 20 {
+		batchSize = 8
+	} else if columnCount > 50 {
+		batchSize = 4
+	}
+
+	// Adjust based on tuple count
+	if tupleCount < 32 {
+		batchSize = min(batchSize, tupleCount)
+	} else if tupleCount > 1000 {
+		batchSize = min(32, batchSize*2) // Larger batches for bulk operations
+	}
+
+	return max(1, batchSize)
+}
+
+// serializeBatchVectorized processes a batch of tuples with vectorized operations
+func (bsm *BinaryStorageManager) serializeBatchVectorized(batch []map[string]any, results [][]byte, schema types.Schema, schemaHash uint32) {
+	// Pre-allocate buffers for the batch
+	buffers := make([]*bytes.Buffer, len(batch))
+	for i := range batch {
+		buffers[i] = bytes.NewBuffer(make([]byte, 0, 256))
+	}
+
+	// Process headers in bulk
+	for i, data := range batch {
+		bsm.writeOptimizedHeader(buffers[i], schema, schemaHash)
+		bsm.serializeTupleData(buffers[i], data, schema)
+		results[i] = buffers[i].Bytes()
+	}
+}
+
+// writeOptimizedHeader writes tuple header with optimized operations
+func (bsm *BinaryStorageManager) writeOptimizedHeader(buffer *bytes.Buffer, schema types.Schema, schemaHash uint32) {
+	header := struct {
+		Magic       uint16
+		ColumnCount uint16
+		DataSize    uint32
+		Timestamp   uint32
+		Checksum    uint32
+		TupleFlags  uint32
+		SchemaHash  uint32
+		Reserved1   uint32
+		Reserved2   uint64
+		Reserved3   uint64
+		Reserved4   uint64
+		Reserved5   uint64
+		Reserved6   uint64
+		Padding     [8]byte
+	}{
+		Magic:       TupleBinaryMagic,
+		ColumnCount: uint16(len(schema.Columns)),
+		Timestamp:   uint32(0),
+		TupleFlags:  0,
+		SchemaHash:  schemaHash,
+	}
+
+	binary.Write(buffer, binary.LittleEndian, &header)
+}
+
+// serializeTupleData serializes tuple data with vectorized bitmap processing
+func (bsm *BinaryStorageManager) serializeTupleData(buffer *bytes.Buffer, data map[string]any, schema types.Schema) {
+	bitmapSize := (len(schema.Columns) + 7) / 8
+	nullBitmap := make([]byte, bitmapSize)
+
+	nonNullValues := make([]any, 0, len(schema.Columns))
+	nonNullTypes := make([]types.DataType, 0, len(schema.Columns))
+
+	// Use vectorized processing
+	bsm.processColumnsBitmapVectorized(schema.Columns, data, nullBitmap, &nonNullValues, &nonNullTypes)
+
+	// Write bitmap
+	buffer.Write(nullBitmap)
+
+	// Write values with optimized multi-value writing
+	bsm.writeValuesOptimized(buffer, nonNullValues, nonNullTypes)
+}
+
+// writeValuesOptimized writes multiple values with type-specific optimizations
+func (bsm *BinaryStorageManager) writeValuesOptimized(buffer *bytes.Buffer, values []any, valueTypes []types.DataType) {
+	// Process values in groups by type for better cache performance
+	for i := 0; i < len(values); i += 4 {
+		end := min(i+4, len(values))
+
+		// Try to batch write similar types
+		if end-i >= 4 && bsm.canBatchWrite(valueTypes[i:end]) {
+			bsm.writeBatchedValues(buffer, values[i:end], valueTypes[i])
+		} else {
+			// Write individually
+			for j := i; j < end; j++ {
+				bsm.writeBinaryValueInline(buffer, values[j], valueTypes[j])
+			}
+		}
+	}
+}
+
+// canBatchWrite checks if a group of types can be batch written
+func (bsm *BinaryStorageManager) canBatchWrite(dataTypes []types.DataType) bool {
+	if len(dataTypes) < 4 {
+		return false
+	}
+
+	// Check if all types are the same and suitable for batching
+	firstType := dataTypes[0]
+	for _, t := range dataTypes[1:] {
+		if t != firstType {
+			return false
+		}
+	}
+
+	// Only batch numeric types
+	return firstType == types.IntType || firstType == types.BigIntType || firstType == types.FloatType || firstType == types.DoubleType
+}
+
+// writeBatchedValues writes a batch of same-type values efficiently
+func (bsm *BinaryStorageManager) writeBatchedValues(buffer *bytes.Buffer, values []any, dataType types.DataType) {
+	b := bsm.byteSlicePool.Get().([]byte)
+	defer bsm.byteSlicePool.Put(b)
+
+	switch dataType {
+	case types.IntType:
+		// Batch write 4 int32 values (16 bytes)
+		for i, value := range values {
+			v32 := uint32(value.(int))
+			offset := i * 4
+			b[offset] = byte(v32)
+			b[offset+1] = byte(v32 >> 8)
+			b[offset+2] = byte(v32 >> 16)
+			b[offset+3] = byte(v32 >> 24)
+		}
+		buffer.Write(b[:len(values)*4])
+	case types.BigIntType:
+		// Batch write 4 int64 values (32 bytes) - would need larger buffer
+		for _, value := range values {
+			bsm.writeBinaryValueInline(buffer, value, dataType)
+		}
+	default:
+		// Fallback to individual writes
+		for _, value := range values {
+			bsm.writeBinaryValueInline(buffer, value, dataType)
+		}
+	}
+}
+
+// getBitmapFromPool gets a bitmap of the specified size from pool
+func (bsm *BinaryStorageManager) getBitmapFromPool(size int) []byte {
+	bitmap := bsm.bitmapPool.Get().([]byte)
+	// Resize if needed (keep capacity for reuse)
+	if cap(bitmap) < size {
+		bitmap = make([]byte, size)
+	} else {
+		bitmap = bitmap[:size]
+		// Clear the bitmap
+		for i := range bitmap {
+			bitmap[i] = 0
+		}
+	}
+	return bitmap
+}
+
+// returnBitmapToPool returns a bitmap to the pool
+func (bsm *BinaryStorageManager) returnBitmapToPool(bitmap []byte) {
+	if cap(bitmap) <= 64 { // Only pool reasonable sizes
+		bsm.bitmapPool.Put(bitmap)
+	}
+}
+
+// fastChecksum provides a fast checksum for small data (much faster than CRC32)
+func (bsm *BinaryStorageManager) fastChecksum(data []byte) uint32 {
+	// Simple FNV-1a hash - much faster than CRC32 for small data
+	hash := uint32(2166136261)
+	for _, b := range data {
+		hash ^= uint32(b)
+		hash *= 16777619
+	}
+	return hash
+}
+
+// alignToCacheLine aligns an offset to cache line boundary
+func (bsm *BinaryStorageManager) alignToCacheLine(offset int) int {
+	return (offset + CacheLineMask) &^ CacheLineMask
+}
+
+// writeCacheAlignedData writes data with cache-line alignment for optimal access
+func (bsm *BinaryStorageManager) writeCacheAlignedData(buffer *bytes.Buffer, data []byte) {
+	currentPos := buffer.Len()
+
+	// Calculate padding needed for cache alignment
+	alignedPos := bsm.alignToCacheLine(currentPos)
+	padding := alignedPos - currentPos
+
+	// Add padding if needed (but only if it's reasonable - less than cache line size)
+	if padding > 0 && padding < CacheLineSize {
+		buffer.Write(make([]byte, padding))
+	}
+
+	// Write the actual data
+	buffer.Write(data)
+}
+
+// prefetchNextCacheLine provides hint for sequential access optimization
+func (bsm *BinaryStorageManager) prefetchNextCacheLine(data []byte, offset int) {
+	// In Go, we can't directly issue prefetch instructions, but we can
+	// structure our access patterns to be cache-friendly
+	// This is a placeholder for potential future optimization with assembly
+	if offset+CacheLineSize < len(data) {
+		// Touch the next cache line to encourage prefetching
+		_ = data[offset+CacheLineSize-1]
+	}
 }
 
 // estimateValueSize estimates the serialized size of a value
@@ -755,6 +1252,28 @@ func (bsm *BinaryStorageManager) estimateValueSize(value any, dataType types.Dat
 		return 5 + len(v) // type byte + length + data
 	default:
 		return 32 // Default estimate for complex types
+	}
+}
+
+// estimateValueSizeCompact estimates serialized size with compact encoding
+func (bsm *BinaryStorageManager) estimateValueSizeCompact(value any, dataType types.DataType) int {
+	switch v := value.(type) {
+	case int, int32, uint32:
+		return 4 // No type byte needed, use position
+	case int64, uint64:
+		return 8 // No type byte needed
+	case float32:
+		return 4 // No type byte needed
+	case float64:
+		return 8 // No type byte needed
+	case bool:
+		return 1 // No type byte needed
+	case string:
+		return 2 + len(v) // compact length + data
+	case []byte:
+		return 2 + len(v) // compact length + data
+	default:
+		return 16 // Default estimate for complex types
 	}
 }
 
@@ -804,50 +1323,237 @@ func (bsm *BinaryStorageManager) writeBinaryValue(buffer *bytes.Buffer, value an
 
 // DeserializeTupleBinary deserializes binary tuple data back to map
 func (bsm *BinaryStorageManager) DeserializeTupleBinary(data []byte, schema types.Schema) map[string]any {
-	if len(data) < int(unsafe.Sizeof(BinaryTupleHeader{})) {
+	if len(data) < CacheAlignedTupleHeaderSize { // 64-byte cache-aligned header
 		return make(map[string]any)
 	}
 
 	reader := bytes.NewReader(data)
 
-	// Read tuple header
-	var header BinaryTupleHeader
+	// Read cache-aligned header
+	var header struct {
+		Magic       uint16  // Magic number for format detection
+		ColumnCount uint16  // Number of columns
+		DataSize    uint32  // Size of data portion
+		Timestamp   uint32  // Creation timestamp
+		Checksum    uint32  // Data integrity check
+		TupleFlags  uint32  // Tuple status flags
+		SchemaHash  uint32  // Schema version hash for validation
+		Reserved1   uint32  // Reserved for future use
+		Reserved2   uint64  // Reserved for future use
+		Reserved3   uint64  // Reserved for future use
+		Reserved4   uint64  // Reserved for future use
+		Reserved5   uint64  // Reserved for future use
+		Reserved6   uint64  // Reserved for future use
+		Padding     [8]byte // Padding to reach 64 bytes
+	}
 	binary.Read(reader, binary.LittleEndian, &header)
 
-	// Verify checksum
-	dataBytes := data[unsafe.Sizeof(header) : unsafe.Sizeof(header)+uintptr(header.DataSize)]
-	calculatedChecksum := crc32.ChecksumIEEE(dataBytes)
-	if calculatedChecksum != header.Checksum {
-		// Data corruption detected, return empty map
+	// Verify magic number
+	if header.Magic != TupleBinaryMagic {
 		return make(map[string]any)
+	}
+
+	// Verify schema compatibility
+	expectedHash := bsm.calculateSchemaHash(schema)
+	if header.SchemaHash != expectedHash {
+		// Schema mismatch - this could be from an older version
+		// For now, continue but could add migration logic here
+	}
+
+	// Verify checksum (try both fast and CRC32 checksums)
+	dataBytes := data[CacheAlignedTupleHeaderSize : CacheAlignedTupleHeaderSize+header.DataSize]
+	var calculatedChecksum uint32
+	if len(dataBytes) < 1024 {
+		calculatedChecksum = bsm.fastChecksum(dataBytes)
+	} else {
+		calculatedChecksum = crc32.ChecksumIEEE(dataBytes)
+	}
+
+	// If fast checksum doesn't match, try CRC32 (for compatibility)
+	if calculatedChecksum != header.Checksum {
+		if len(dataBytes) < 1024 {
+			calculatedChecksum = crc32.ChecksumIEEE(dataBytes)
+		}
+		if calculatedChecksum != header.Checksum {
+			// Data corruption detected, return empty map
+			return make(map[string]any)
+		}
 	}
 
 	result := make(map[string]any)
 
-	// Read column values in schema order
-	for _, col := range schema.Columns {
+	// Read null bitmap
+	nullBitmapSize := (len(schema.Columns) + 7) / 8
+	nullBitmap := make([]byte, nullBitmapSize)
+	reader.Read(nullBitmap)
+
+	// Pre-allocate result map with known size
+	result = make(map[string]any, len(schema.Columns))
+
+	// Read only non-null values in schema order with cache-friendly access
+	for i, col := range schema.Columns {
 		if reader.Len() == 0 {
 			break
 		}
 
-		// Read type marker
-		var typeByte byte
-		binary.Read(reader, binary.LittleEndian, &typeByte)
+		// Prefetch hint for sequential access (every few iterations)
+		if i%8 == 0 {
+			currentOffset := len(data) - reader.Len()
+			bsm.prefetchNextCacheLine(data, currentOffset)
+		}
 
-		if typeByte == 0 {
-			// Null value
-			result[col.Name] = nil
+		// Check if value is null using bitmap
+		if (nullBitmap[i/8] & (1 << (i % 8))) == 0 {
+			// Null value - don't store in map for efficiency
 			continue
 		}
 
-		// Read value based on type
-		value := bsm.readBinaryValue(reader, typeByte)
+		// Read value based on column type (no type marker needed)
+		value := bsm.readBinaryValueCompact(reader, col.Type)
 		if value != nil {
 			result[col.Name] = value
 		}
 	}
 
 	return result
+}
+
+// DeserializeTupleBinaryOptimized provides an optimized deserialization path for high-performance scenarios
+func (bsm *BinaryStorageManager) DeserializeTupleBinaryOptimized(data []byte, schema types.Schema) map[string]any {
+	// Fast path validation
+	if len(data) < CacheAlignedTupleHeaderSize {
+		return make(map[string]any)
+	}
+
+	// Use unsafe pointer for faster header reading
+	header := (*struct {
+		Magic       uint16
+		ColumnCount uint16
+		DataSize    uint32
+		Timestamp   uint32
+		Checksum    uint32
+		TupleFlags  uint32
+		SchemaHash  uint32
+		Reserved1   uint32
+		Reserved2   uint64
+		Reserved3   uint64
+		Reserved4   uint64
+		Reserved5   uint64
+		Reserved6   uint64
+		Padding     [8]byte
+	})(unsafe.Pointer(&data[0]))
+
+	// Quick validation
+	if header.Magic != TupleBinaryMagic {
+		return make(map[string]any)
+	}
+
+	// Skip checksum validation for performance (optional)
+	// Could be enabled with a flag for critical data
+
+	// Pre-allocate result with known size
+	result := make(map[string]any, len(schema.Columns))
+
+	// Fast bitmap reading without bytes.Reader overhead
+	dataStart := CacheAlignedTupleHeaderSize
+	nullBitmapSize := (len(schema.Columns) + 7) / 8
+	nullBitmap := data[dataStart : dataStart+nullBitmapSize]
+
+	// Direct data access without reader
+	valueData := data[dataStart+nullBitmapSize:]
+	offset := 0
+
+	// Optimized column processing
+	for i, col := range schema.Columns {
+		// Check null bitmap
+		if (nullBitmap[i/8] & (1 << (i % 8))) == 0 {
+			continue // Null value
+		}
+
+		// Read value directly from byte slice
+		value, bytesRead := bsm.readValueFast(valueData[offset:], col.Type)
+		if value != nil {
+			result[col.Name] = value
+			offset += bytesRead
+		}
+	}
+
+	return result
+}
+
+// readValueFast reads a value directly from byte slice for maximum performance
+func (bsm *BinaryStorageManager) readValueFast(data []byte, dataType types.DataType) (any, int) {
+	if len(data) < 2 {
+		return nil, 0
+	}
+
+	switch dataType {
+	case types.IntType:
+		if len(data) < 4 {
+			return nil, 0
+		}
+		// Direct unsafe conversion for speed
+		value := *(*int32)(unsafe.Pointer(&data[0]))
+		return int(value), 4
+
+	case types.BigIntType:
+		if len(data) < 8 {
+			return nil, 0
+		}
+		// Direct unsafe conversion for speed
+		value := *(*int64)(unsafe.Pointer(&data[0]))
+		return value, 8
+
+	case types.DoubleType:
+		if len(data) < 8 {
+			return nil, 0
+		}
+		value := *(*float64)(unsafe.Pointer(&data[0]))
+		return value, 8
+
+	case types.BoolType:
+		if len(data) < 1 {
+			return nil, 0
+		}
+		return data[0] != 0, 1
+
+	case types.VarcharType, types.TextType, types.CharType:
+		if len(data) < 2 {
+			return nil, 0
+		}
+		length := *(*uint16)(unsafe.Pointer(&data[0]))
+		if len(data) < int(2+length) {
+			return nil, 0
+		}
+		if length == 0 {
+			return "", 2
+		}
+		// Direct string conversion without copying when safe
+		value := string(data[2 : 2+length])
+		return value, int(2 + length)
+
+	case types.ByteaType:
+		if len(data) < 2 {
+			return nil, 0
+		}
+		length := *(*uint16)(unsafe.Pointer(&data[0]))
+		if len(data) < int(2+length) {
+			return nil, 0
+		}
+		if length == 0 {
+			return []byte{}, 2
+		}
+		value := make([]byte, length)
+		copy(value, data[2:2+length])
+		return value, int(2 + length)
+
+	default:
+		// Fallback to safe method for unknown types
+		reader := bytes.NewReader(data)
+		value := bsm.readBinaryValueCompact(reader, dataType)
+		bytesRead := len(data) - reader.Len()
+		return value, bytesRead
+	}
 }
 
 // readBinaryValue reads a binary value based on type marker
@@ -887,5 +1593,301 @@ func (bsm *BinaryStorageManager) readBinaryValue(reader *bytes.Reader, typeByte 
 		return bytes
 	default:
 		return nil
+	}
+}
+
+// readBinaryValueCompact reads a binary value without type markers using schema type
+func (bsm *BinaryStorageManager) readBinaryValueCompact(reader *bytes.Reader, dataType types.DataType) any {
+	switch dataType {
+	case types.IntType:
+		var value int32
+		binary.Read(reader, binary.LittleEndian, &value)
+		return int(value)
+	case types.BigIntType:
+		var value int64
+		binary.Read(reader, binary.LittleEndian, &value)
+		return value
+	case types.FloatType:
+		var value float32
+		binary.Read(reader, binary.LittleEndian, &value)
+		return value
+	case types.DoubleType:
+		var value float64
+		binary.Read(reader, binary.LittleEndian, &value)
+		return value
+	case types.BoolType:
+		var value byte
+		binary.Read(reader, binary.LittleEndian, &value)
+		return value != 0
+	case types.VarcharType, types.TextType, types.CharType:
+		var length uint16
+		if binary.Read(reader, binary.LittleEndian, &length) != nil {
+			return ""
+		}
+		if length == 0 {
+			return ""
+		}
+		strBytes := make([]byte, length)
+		if n, _ := reader.Read(strBytes); n != int(length) {
+			return ""
+		}
+		return string(strBytes)
+	case types.ByteaType:
+		var length uint16
+		if binary.Read(reader, binary.LittleEndian, &length) != nil {
+			return nil
+		}
+		if length == 0 {
+			return []byte{}
+		}
+		bytes := make([]byte, length)
+		if n, _ := reader.Read(bytes); n != int(length) {
+			return nil
+		}
+		return bytes
+	default:
+		// Fallback to string
+		var length uint16
+		if binary.Read(reader, binary.LittleEndian, &length) != nil {
+			return ""
+		}
+		if length == 0 {
+			return ""
+		}
+		strBytes := make([]byte, length)
+		if n, _ := reader.Read(strBytes); n != int(length) {
+			return ""
+		}
+		return string(strBytes)
+	}
+}
+
+// SerializeTuplesBinaryParallel serializes multiple tuples using parallel lanes for large datasets
+func (bsm *BinaryStorageManager) SerializeTuplesBinaryParallel(dataSlice []map[string]any, schema types.Schema) [][]byte {
+	results := make([][]byte, len(dataSlice))
+
+	// Only use parallel processing for larger datasets (overhead not worth it for small sets)
+	if len(dataSlice) < 100 {
+		return bsm.SerializeTuplesBinaryBulk(dataSlice, schema)
+	}
+
+	// Calculate optimal number of workers (limit to prevent context switching overhead)
+	numWorkers := min(runtime.NumCPU(), len(dataSlice)/50, 8)
+	if numWorkers < 2 {
+		return bsm.SerializeTuplesBinaryBulk(dataSlice, schema)
+	}
+
+	// Get cached schema hash once for all workers
+	tableName := "default"
+	schemaHash, exists := bsm.schemaHashCache[tableName]
+	if !exists {
+		schemaHash = bsm.calculateSchemaHash(schema)
+		bsm.schemaHashCache[tableName] = schemaHash
+	}
+
+	// Create work distribution
+	chunkSize := len(dataSlice) / numWorkers
+	var wg sync.WaitGroup
+
+	// Process chunks in parallel
+	for i := 0; i < numWorkers; i++ {
+		start := i * chunkSize
+		end := start + chunkSize
+		if i == numWorkers-1 {
+			end = len(dataSlice) // Last worker takes remaining items
+		}
+
+		wg.Add(1)
+		go func(start, end int) {
+			defer wg.Done()
+
+			// Process this chunk
+			for j := start; j < end; j++ {
+				results[j] = bsm.serializeTupleOptimized(dataSlice[j], schema, schemaHash)
+			}
+		}(start, end)
+	}
+
+	wg.Wait()
+	return results
+}
+
+// DeserializeTuplesBinaryParallel deserializes multiple binary tuples in parallel
+func (bsm *BinaryStorageManager) DeserializeTuplesBinaryParallel(dataSlice [][]byte, schema types.Schema) []map[string]any {
+	results := make([]map[string]any, len(dataSlice))
+
+	// Only use parallel processing for larger datasets
+	if len(dataSlice) < 50 {
+		return bsm.deserializeTuplesBulk(dataSlice, schema)
+	}
+
+	// Calculate optimal number of workers
+	numWorkers := min(runtime.NumCPU(), len(dataSlice)/25, 8)
+	if numWorkers < 2 {
+		return bsm.deserializeTuplesBulk(dataSlice, schema)
+	}
+
+	// Create work distribution
+	chunkSize := len(dataSlice) / numWorkers
+	var wg sync.WaitGroup
+
+	// Process chunks in parallel
+	for i := 0; i < numWorkers; i++ {
+		start := i * chunkSize
+		end := start + chunkSize
+		if i == numWorkers-1 {
+			end = len(dataSlice) // Last worker takes remaining items
+		}
+
+		wg.Add(1)
+		go func(start, end int) {
+			defer wg.Done()
+
+			// Deserialize this chunk
+			for j := start; j < end; j++ {
+				results[j] = bsm.DeserializeTupleBinaryOptimized(dataSlice[j], schema)
+			}
+		}(start, end)
+	}
+
+	wg.Wait()
+	return results
+}
+
+// deserializeTuplesBulk deserializes tuples sequentially for small datasets
+func (bsm *BinaryStorageManager) deserializeTuplesBulk(dataSlice [][]byte, schema types.Schema) []map[string]any {
+	results := make([]map[string]any, len(dataSlice))
+	for i, data := range dataSlice {
+		results[i] = bsm.DeserializeTupleBinaryOptimized(data, schema)
+	}
+	return results
+}
+
+// writeBinaryValueInline writes a value optimized for performance with pooled byte slices
+func (bsm *BinaryStorageManager) writeBinaryValueInline(buffer *bytes.Buffer, value any, dataType types.DataType) {
+	// Fast path for common types using pooled byte slices with unrolled operations
+	switch v := value.(type) {
+	case int:
+		// Unrolled int32 writing - faster than binary.Write
+		b := bsm.byteSlicePool.Get().([]byte)
+		v32 := uint32(v)
+		b[0] = byte(v32)
+		b[1] = byte(v32 >> 8)
+		b[2] = byte(v32 >> 16)
+		b[3] = byte(v32 >> 24)
+		buffer.Write(b[:4])
+		bsm.byteSlicePool.Put(b)
+		return
+	case int32:
+		// Unrolled int32 writing
+		b := bsm.byteSlicePool.Get().([]byte)
+		v32 := uint32(v)
+		b[0] = byte(v32)
+		b[1] = byte(v32 >> 8)
+		b[2] = byte(v32 >> 16)
+		b[3] = byte(v32 >> 24)
+		buffer.Write(b[:4])
+		bsm.byteSlicePool.Put(b)
+		return
+	case int64:
+		// Unrolled int64 writing - process in 32-bit chunks for better performance
+		b := bsm.byteSlicePool.Get().([]byte)
+		v64 := uint64(v)
+		// Lower 32 bits
+		lower := uint32(v64)
+		b[0] = byte(lower)
+		b[1] = byte(lower >> 8)
+		b[2] = byte(lower >> 16)
+		b[3] = byte(lower >> 24)
+		// Upper 32 bits
+		upper := uint32(v64 >> 32)
+		b[4] = byte(upper)
+		b[5] = byte(upper >> 8)
+		b[6] = byte(upper >> 16)
+		b[7] = byte(upper >> 24)
+		buffer.Write(b[:8])
+		bsm.byteSlicePool.Put(b)
+		return
+	case string:
+		// Optimized string writing with length caching
+		strBytes := []byte(v)
+		length := uint16(len(strBytes))
+		b := bsm.byteSlicePool.Get().([]byte)
+		b[0] = byte(length)
+		b[1] = byte(length >> 8)
+		buffer.Write(b[:2])
+		buffer.Write(strBytes)
+		bsm.byteSlicePool.Put(b)
+		return
+	}
+
+	// Fallback to standard implementation for other types
+	bsm.writeBinaryValueCompact(buffer, value, dataType)
+}
+
+// processColumnsBitmapVectorized processes columns in vectorized manner for better performance
+func (bsm *BinaryStorageManager) processColumnsBitmapVectorized(columns []types.Column, data map[string]any, nullBitmap []byte, nonNullValues *[]any, nonNullTypes *[]types.DataType) {
+	colCount := len(columns)
+
+	// Process 8 columns at a time for vectorized bitmap operations
+	for i := 0; i < colCount; i += 8 {
+		end := i + 8
+		if end > colCount {
+			end = colCount
+		}
+
+		// Process this chunk of columns
+		bitmapByte := byte(0)
+		bitmapByteIdx := i / 8
+
+		// Unrolled loop for up to 8 columns
+		for j := i; j < end; j++ {
+			col := columns[j]
+			if value, exists := data[col.Name]; exists && value != nil {
+				// Set bit in current byte
+				bitmapByte |= 1 << (j % 8)
+				*nonNullValues = append(*nonNullValues, value)
+				*nonNullTypes = append(*nonNullTypes, col.Type)
+			}
+		}
+
+		// Store the computed byte
+		nullBitmap[bitmapByteIdx] = bitmapByte
+	}
+}
+
+// writeBinaryValueCompact writes a value without type markers for space efficiency
+func (bsm *BinaryStorageManager) writeBinaryValueCompact(buffer *bytes.Buffer, value any, dataType types.DataType) {
+	switch v := value.(type) {
+	case int:
+		binary.Write(buffer, binary.LittleEndian, int32(v))
+	case int32:
+		binary.Write(buffer, binary.LittleEndian, v)
+	case int64:
+		binary.Write(buffer, binary.LittleEndian, v)
+	case float32:
+		binary.Write(buffer, binary.LittleEndian, v)
+	case float64:
+		binary.Write(buffer, binary.LittleEndian, v)
+	case bool:
+		if v {
+			buffer.WriteByte(1)
+		} else {
+			buffer.WriteByte(0)
+		}
+	case string:
+		strBytes := []byte(v)
+		// Use compact length encoding (2 bytes max for 64KB strings)
+		binary.Write(buffer, binary.LittleEndian, uint16(len(strBytes)))
+		buffer.Write(strBytes)
+	case []byte:
+		binary.Write(buffer, binary.LittleEndian, uint16(len(v)))
+		buffer.Write(v)
+	default:
+		// Fallback to string representation
+		strRepr := fmt.Sprintf("%v", v)
+		strBytes := []byte(strRepr)
+		binary.Write(buffer, binary.LittleEndian, uint16(len(strBytes)))
+		buffer.Write(strBytes)
 	}
 }

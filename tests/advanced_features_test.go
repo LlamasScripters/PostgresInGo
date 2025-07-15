@@ -682,8 +682,8 @@ func TestComplexQueries(t *testing.T) {
 		orderTable, _ := pg.GetTable("orders")
 
 		queryPlan := &types.QueryPlan{
-			Tables:         []*types.Table{customerTable, orderTable},
-			JoinType:       types.InnerJoin,
+			Tables:   []*types.Table{customerTable, orderTable},
+			JoinType: types.InnerJoin,
 			JoinConditions: []types.JoinCondition{
 				{LeftColumn: "id", RightColumn: "customer_id", Operator: "="},
 			},

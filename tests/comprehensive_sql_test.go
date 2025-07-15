@@ -441,7 +441,7 @@ func TestDataOperations(t *testing.T) {
 			t.Errorf("Failed to delete user: %v", err)
 		}
 		t.Logf("Deleted %d records", deleted)
-		
+
 		// Since the storage implementation is simplified and may not handle updates properly,
 		// we'll adjust the expectation
 		if deleted == 0 {
@@ -1007,8 +1007,8 @@ func BenchmarkAllOperations(b *testing.B) {
 	b.Run("Update", func(b *testing.B) {
 		b.ResetTimer()
 		for i := range b.N {
-			_, err := pg.Update("bench_users", 
-				map[string]any{"id": i % 100}, 
+			_, err := pg.Update("bench_users",
+				map[string]any{"id": i % 100},
 				map[string]any{"name": fmt.Sprintf("Updated User %d", i)})
 			if err != nil {
 				b.Errorf("Update failed: %v", err)

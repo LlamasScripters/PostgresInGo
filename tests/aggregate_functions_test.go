@@ -88,8 +88,8 @@ func TestAggregateFunctions(t *testing.T) {
 			for _, col := range selectStmt.Columns {
 				if funcCall, ok := col.(*parser.FunctionCall); ok {
 					funcName := funcCall.Name
-					if funcName == "COUNT" || funcName == "SUM" || funcName == "AVG" || 
-					   funcName == "MIN" || funcName == "MAX" {
+					if funcName == "COUNT" || funcName == "SUM" || funcName == "AVG" ||
+						funcName == "MIN" || funcName == "MAX" {
 						hasAggregates = true
 						break
 					}
@@ -238,11 +238,11 @@ func (m *MockScanOperator) Next() (*types.Tuple, error) {
 	if !m.opened {
 		return nil, fmt.Errorf("operator not opened")
 	}
-	
+
 	if m.index >= len(m.data) {
 		return nil, fmt.Errorf("no more tuples")
 	}
-	
+
 	tuple := m.data[m.index]
 	m.index++
 	return tuple, nil
@@ -315,15 +315,15 @@ func TestAggregateValueComputation(t *testing.T) {
 			for _, val := range tc.values {
 				state.Count++
 				state.Values = append(state.Values, val)
-				
+
 				if numVal, ok := convertToNumber(val); ok {
 					state.Sum += numVal
 				}
-				
+
 				if state.Min == nil || compareValues(val, state.Min) < 0 {
 					state.Min = val
 				}
-				
+
 				if state.Max == nil || compareValues(val, state.Max) > 0 {
 					state.Max = val
 				}

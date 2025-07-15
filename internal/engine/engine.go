@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -348,27 +350,55 @@ func (pe *PostgresEngine) deserializeData(data []byte) map[string]any {
 func (pe *PostgresEngine) deserializeDataWithSchema(data []byte, tableName string) map[string]any {
 	if pe.storageMode == BinaryStorage && pe.binaryStorage != nil {
 		table, err := pe.storageManager.GetTable(tableName)
-		if err == nil && pe.isBinaryFormat(data) {
-			return pe.binaryStorage.DeserializeTupleBinary(data, table.Schema)
+		if err == nil {
+			// Always try binary first in binary mode
+			if pe.isBinaryFormat(data) {
+				return pe.binaryStorage.DeserializeTupleBinary(data, table.Schema)
+			}
+			// Only fallback to JSON if clearly not binary
+			// This handles migration scenarios
 		}
 	}
 	return pe.deserializeDataJSON(data)
 }
 
-// isBinaryFormat checks if data is in binary format
+// isBinaryFormat checks if data is in cache-aligned binary format
 func (pe *PostgresEngine) isBinaryFormat(data []byte) bool {
-	// Check if data starts with binary tuple header pattern
-	// Binary data will have specific structure, while JSON data will be text
-	if len(data) < 32 {
+	// Check for cache-aligned binary header (64 bytes minimum)
+	if len(data) < 64 {
 		return false
 	}
-	// Simple heuristic: binary data will have non-printable characters early on
-	for i := 0; i < 16 && i < len(data); i++ {
-		if data[i] < 32 && data[i] != 0 {
-			return true
-		}
+	
+	// Read magic number first for fast detection
+	reader := bytes.NewReader(data)
+	var magic uint16
+	binary.Read(reader, binary.LittleEndian, &magic)
+	
+	// Check magic number (0x4254 = "BT")
+	if magic != 0x4254 {
+		return false
 	}
-	return false
+	
+	// Read essential header fields to validate structure
+	var header struct {
+		ColumnCount uint16
+		DataSize    uint32
+		Timestamp   uint32
+		Checksum    uint32
+	}
+	binary.Read(reader, binary.LittleEndian, &header)
+	
+	// Validate header makes sense
+	if header.ColumnCount == 0 || header.ColumnCount > 10000 {
+		return false
+	}
+	if header.DataSize == 0 || header.DataSize > uint32(len(data)) {
+		return false
+	}
+	
+	// Additional validation: check if total size matches (64-byte header + data)
+	expectedSize := 64 + int(header.DataSize)
+	return expectedSize <= len(data)
 }
 
 // deserializeDataJSON converts byte slice back to a map using JSON-style format

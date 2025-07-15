@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,7 +15,8 @@ import (
 )
 
 const (
-	PageSize = 8192 // 8KB pages
+	PageSize     = 65536           // 64KB pages for better large tuple support
+	MaxTupleSize = PageSize - 1024 // Reserve 1KB for page metadata
 )
 
 // DiskManager handles disk I/O operations
@@ -259,9 +261,28 @@ func (sm *StorageManager) InsertTuple(tableName string, tuple *types.Tuple) erro
 		Offset: uint16(offset),
 	}
 
-	// Write tuple to page
+	// Check if tuple fits in current page
 	if offset+tupleSize > len(page.Data) {
-		return fmt.Errorf("tuple too large for page")
+		// If tuple is too large for any page, reject
+		if tupleSize > MaxTupleSize {
+			return fmt.Errorf("tuple size %d exceeds maximum allowed size %d", tupleSize, MaxTupleSize)
+		}
+		// Create new page for this tuple
+		pageID = sm.nextPageID
+		sm.nextPageID++
+		page = &types.Page{
+			ID:   pageID,
+			Type: types.DataPage,
+			Data: make([]byte, PageSize),
+		}
+		offset = 0
+		// Update tuple TID
+		tuple.TID = types.TupleID{
+			PageID: pageID,
+			Offset: uint16(offset),
+		}
+		// Add page to table
+		table.Pages = append(table.Pages, pageID)
 	}
 
 	copy(page.Data[offset:offset+tupleSize], tuple.Data)
@@ -467,46 +488,8 @@ func (sm *StorageManager) GetAllTuples(tableName string) ([]*types.Tuple, error)
 	// Check if we have cached tuples
 	tuples, exists := sm.tableTuples[tableName]
 	if !exists || len(tuples) == 0 {
-		// Rebuild cache from disk
-		tuples = []*types.Tuple{}
-
-		for _, pageID := range table.Pages {
-			page, err := sm.bufferManager.GetPage(pageID, sm.diskManager)
-			if err != nil {
-				continue // Skip pages that can't be read
-			}
-
-			// Scan through the page to find tuples
-			for offset := 0; offset < len(page.Data); {
-				// Skip empty space
-				if page.Data[offset] == 0 {
-					offset++
-					continue
-				}
-
-				// Find end of tuple
-				start := offset
-				for offset < len(page.Data) && page.Data[offset] != 0 {
-					offset++
-				}
-
-				if offset > start {
-					// Found a tuple
-					tupleData := make([]byte, offset-start)
-					copy(tupleData, page.Data[start:offset])
-
-					tuple := &types.Tuple{
-						TID: types.TupleID{
-							PageID: pageID,
-							Offset: uint16(start),
-						},
-						Data: tupleData,
-					}
-					tuples = append(tuples, tuple)
-				}
-			}
-		}
-
+		// Use parallel page reading for better performance
+		tuples = sm.readPagesParallel(table.Pages)
 		// Cache the tuples
 		sm.tableTuples[tableName] = tuples
 	}
@@ -515,6 +498,122 @@ func (sm *StorageManager) GetAllTuples(tableName string) ([]*types.Tuple, error)
 	result := make([]*types.Tuple, len(tuples))
 	copy(result, tuples)
 	return result, nil
+}
+
+// readPagesParallel reads multiple pages in parallel and extracts tuples
+func (sm *StorageManager) readPagesParallel(pageIDs []uint64) []*types.Tuple {
+	if len(pageIDs) == 0 {
+		return []*types.Tuple{}
+	}
+
+	// For small number of pages, use sequential processing
+	if len(pageIDs) <= 4 {
+		return sm.readPagesSequential(pageIDs)
+	}
+
+	// Calculate optimal number of workers
+	numWorkers := min(runtime.NumCPU(), len(pageIDs)/2, 8)
+	if numWorkers < 2 {
+		return sm.readPagesSequential(pageIDs)
+	}
+
+	// Create channels for coordinating work
+	pageJobChan := make(chan uint64, len(pageIDs))
+	resultChan := make(chan []*types.Tuple, len(pageIDs))
+
+	// Start workers
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sm.pageWorker(pageJobChan, resultChan)
+		}()
+	}
+
+	// Send page IDs to workers
+	go func() {
+		defer close(pageJobChan)
+		for _, pageID := range pageIDs {
+			pageJobChan <- pageID
+		}
+	}()
+
+	// Collect results
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Aggregate all tuples
+	var allTuples []*types.Tuple
+	for tuples := range resultChan {
+		allTuples = append(allTuples, tuples...)
+	}
+
+	return allTuples
+}
+
+// pageWorker processes page reading jobs
+func (sm *StorageManager) pageWorker(pageJobChan <-chan uint64, resultChan chan<- []*types.Tuple) {
+	for pageID := range pageJobChan {
+		tuples := sm.readSinglePage(pageID)
+		resultChan <- tuples
+	}
+}
+
+// readSinglePage reads a single page and extracts tuples
+func (sm *StorageManager) readSinglePage(pageID uint64) []*types.Tuple {
+	page, err := sm.bufferManager.GetPage(pageID, sm.diskManager)
+	if err != nil {
+		return []*types.Tuple{} // Return empty slice for pages that can't be read
+	}
+
+	var tuples []*types.Tuple
+
+	// Scan through the page to find tuples
+	for offset := 0; offset < len(page.Data); {
+		// Skip empty space
+		if page.Data[offset] == 0 {
+			offset++
+			continue
+		}
+
+		// Find end of tuple
+		start := offset
+		for offset < len(page.Data) && page.Data[offset] != 0 {
+			offset++
+		}
+
+		if offset > start {
+			// Found a tuple
+			tupleData := make([]byte, offset-start)
+			copy(tupleData, page.Data[start:offset])
+
+			tuple := &types.Tuple{
+				TID: types.TupleID{
+					PageID: pageID,
+					Offset: uint16(start),
+				},
+				Data: tupleData,
+			}
+			tuples = append(tuples, tuple)
+		}
+	}
+
+	return tuples
+}
+
+// readPagesSequential reads pages sequentially (fallback for small datasets)
+func (sm *StorageManager) readPagesSequential(pageIDs []uint64) []*types.Tuple {
+	var tuples []*types.Tuple
+
+	for _, pageID := range pageIDs {
+		pageTuples := sm.readSinglePage(pageID)
+		tuples = append(tuples, pageTuples...)
+	}
+
+	return tuples
 }
 
 // findFreeOffset finds a free offset in a page for a tuple of given size
@@ -673,7 +772,7 @@ func (sm *StorageManager) Close() error {
 // saveMetadata saves table metadata to disk
 func (sm *StorageManager) saveMetadata() {
 	metadataFile := filepath.Join(filepath.Dir(sm.diskManager.file.Name()), "metadata.json")
-	
+
 	data, err := json.MarshalIndent(sm.tables, "", "  ")
 	if err != nil {
 		fmt.Printf("Error marshaling table metadata: %v\n", err)

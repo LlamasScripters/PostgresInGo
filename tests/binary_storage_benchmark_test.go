@@ -67,8 +67,8 @@ func benchmarkStorageMode(b *testing.B, mode engine.StorageMode, rowCount, colCo
 
 	// Benchmark write operations
 	b.Run("Insert", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			for row := 0; row < rowCount; row++ {
+		for b.Loop() {
+			for row := range rowCount {
 				data := generateBenchmarkData(row, colCount)
 				err := eng.Insert("benchmark_table", data)
 				if err != nil {
@@ -81,13 +81,13 @@ func benchmarkStorageMode(b *testing.B, mode engine.StorageMode, rowCount, colCo
 	// Benchmark read operations
 	b.Run("Select", func(b *testing.B) {
 		// First insert some data
-		for row := 0; row < rowCount; row++ {
+		for row := range rowCount {
 			data := generateBenchmarkData(row, colCount)
 			eng.Insert("benchmark_table", data)
 		}
 
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			_, err := eng.Select("benchmark_table", nil)
 			if err != nil {
 				b.Fatalf("Select failed: %v", err)
@@ -101,7 +101,7 @@ func createBenchmarkSchema(colCount int) types.Schema {
 	columns := make([]types.Column, colCount)
 
 	// Create mixed column types for realistic testing
-	for i := 0; i < colCount; i++ {
+	for i := range colCount {
 		switch i % 5 {
 		case 0:
 			columns[i] = types.Column{
@@ -144,7 +144,7 @@ func createBenchmarkSchema(colCount int) types.Schema {
 func generateBenchmarkData(row, colCount int) map[string]any {
 	data := make(map[string]any)
 
-	for i := 0; i < colCount; i++ {
+	for i := range colCount {
 		switch i % 5 {
 		case 0:
 			data[fmt.Sprintf("id_%d", i)] = row*colCount + i
@@ -160,6 +160,325 @@ func generateBenchmarkData(row, colCount int) map[string]any {
 	}
 
 	return data
+}
+
+// benchmarkVectorizedProcessing tests vectorized column processing
+func benchmarkVectorizedProcessing(b *testing.B, dataDir string) {
+	config := engine.EngineConfig{
+		DataDir:     dataDir + "_vectorized",
+		StorageMode: engine.BinaryStorage,
+	}
+	eng, err := engine.NewPostgresEngineWithConfig(config)
+	if err != nil {
+		b.Fatalf("Failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	// Create schema with many columns to test vectorization
+	schema := createWideSchema(32) // 32 columns
+	err = eng.CreateTable("vectorized_test", schema)
+	if err != nil {
+		b.Fatalf("Failed to create table: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for b.Loop() {
+		// Insert many rows to test vectorized bitmap processing
+		for i := range 100 {
+			data := generateWideData(i, 32)
+			err := eng.Insert("vectorized_test", data)
+			if err != nil {
+				b.Fatalf("Insert failed: %v", err)
+			}
+		}
+	}
+}
+
+// benchmarkAdaptiveBatching tests adaptive batch size optimization
+func benchmarkAdaptiveBatching(b *testing.B, dataDir string) {
+	config := engine.EngineConfig{
+		DataDir:     dataDir + "_adaptive",
+		StorageMode: engine.BinaryStorage,
+	}
+	eng, err := engine.NewPostgresEngineWithConfig(config)
+	if err != nil {
+		b.Fatalf("Failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	// Test different schema sizes
+	testCases := []struct {
+		name     string
+		colCount int
+		rowCount int
+	}{
+		{"SmallSchema_8cols", 8, 200},
+		{"MediumSchema_24cols", 24, 200},
+		{"LargeSchema_64cols", 64, 200},
+	}
+
+	for _, tc := range testCases {
+		b.Run(tc.name, func(b *testing.B) {
+			schema := createWideSchema(tc.colCount)
+			tableName := fmt.Sprintf("adaptive_test_%d", tc.colCount)
+			err = eng.CreateTable(tableName, schema)
+			if err != nil {
+				b.Fatalf("Failed to create table: %v", err)
+			}
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for b.Loop() {
+				for i := range tc.rowCount {
+					data := generateWideData(i, tc.colCount)
+					err := eng.Insert(tableName, data)
+					if err != nil {
+						b.Fatalf("Insert failed: %v", err)
+					}
+				}
+			}
+		})
+	}
+}
+
+// benchmarkParallelSerialization tests parallel processing performance
+func benchmarkParallelSerialization(b *testing.B, dataDir string) {
+	config := engine.EngineConfig{
+		DataDir:     dataDir + "_parallel",
+		StorageMode: engine.BinaryStorage,
+	}
+	eng, err := engine.NewPostgresEngineWithConfig(config)
+	if err != nil {
+		b.Fatalf("Failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	schema := createWideSchema(16)
+	err = eng.CreateTable("parallel_test", schema)
+	if err != nil {
+		b.Fatalf("Failed to create table: %v", err)
+	}
+
+	// Test different dataset sizes to see where parallel processing helps
+	datasetSizes := []int{50, 200, 1000, 5000}
+
+	for _, size := range datasetSizes {
+		b.Run(fmt.Sprintf("Dataset_%d", size), func(b *testing.B) {
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for b.Loop() {
+				for i := range size {
+					data := generateWideData(i, 16)
+					err := eng.Insert("parallel_test", data)
+					if err != nil {
+						b.Fatalf("Insert failed: %v", err)
+					}
+				}
+			}
+		})
+	}
+}
+
+// benchmarkUnrolledValueWriting tests optimized value writing
+func benchmarkUnrolledValueWriting(b *testing.B, dataDir string) {
+	config := engine.EngineConfig{
+		DataDir:     dataDir + "_unrolled",
+		StorageMode: engine.BinaryStorage,
+	}
+	eng, err := engine.NewPostgresEngineWithConfig(config)
+	if err != nil {
+		b.Fatalf("Failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	// Create schema focused on types that benefit from unrolled writing
+	schema := types.Schema{
+		Columns: []types.Column{
+			{Name: "id", Type: types.IntType},
+			{Name: "value1", Type: types.BigIntType},
+			{Name: "value2", Type: types.IntType},
+			{Name: "value3", Type: types.BigIntType},
+			{Name: "name", Type: types.VarcharType, Size: 50},
+			{Name: "description", Type: types.TextType},
+			{Name: "active", Type: types.BoolType},
+			{Name: "score", Type: types.DoubleType},
+		},
+	}
+
+	err = eng.CreateTable("unrolled_test", schema)
+	if err != nil {
+		b.Fatalf("Failed to create table: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for b.Loop() {
+		for i := range 500 {
+			data := map[string]any{
+				"id":          i,
+				"value1":      int64(i * 1000),
+				"value2":      i * 100,
+				"value3":      int64(i * 10000),
+				"name":        fmt.Sprintf("user_%d", i),
+				"description": fmt.Sprintf("Description for user %d with some additional text", i),
+				"active":      i%2 == 0,
+				"score":       float64(i) * 1.5,
+			}
+			err := eng.Insert("unrolled_test", data)
+			if err != nil {
+				b.Fatalf("Insert failed: %v", err)
+			}
+		}
+	}
+}
+
+// createWideSchema creates a schema with specified number of columns
+func createWideSchema(colCount int) types.Schema {
+	columns := make([]types.Column, colCount)
+
+	for i := range colCount {
+		switch i % 6 {
+		case 0:
+			columns[i] = types.Column{
+				Name:     fmt.Sprintf("int_col_%d", i),
+				Type:     types.IntType,
+				Nullable: true,
+			}
+		case 1:
+			columns[i] = types.Column{
+				Name:     fmt.Sprintf("bigint_col_%d", i),
+				Type:     types.BigIntType,
+				Nullable: true,
+			}
+		case 2:
+			columns[i] = types.Column{
+				Name:     fmt.Sprintf("varchar_col_%d", i),
+				Type:     types.VarcharType,
+				Size:     50,
+				Nullable: true,
+			}
+		case 3:
+			columns[i] = types.Column{
+				Name:     fmt.Sprintf("double_col_%d", i),
+				Type:     types.DoubleType,
+				Nullable: true,
+			}
+		case 4:
+			columns[i] = types.Column{
+				Name:     fmt.Sprintf("bool_col_%d", i),
+				Type:     types.BoolType,
+				Nullable: true,
+			}
+		case 5:
+			columns[i] = types.Column{
+				Name:     fmt.Sprintf("text_col_%d", i),
+				Type:     types.TextType,
+				Nullable: true,
+			}
+		}
+	}
+
+	return types.Schema{Columns: columns}
+}
+
+// generateWideData creates test data for wide schemas
+func generateWideData(row, colCount int) map[string]any {
+	data := make(map[string]any)
+
+	for i := range colCount {
+		// Add some null values to test bitmap processing
+		if (row+i)%7 == 0 {
+			continue // Leave as null
+		}
+
+		switch i % 6 {
+		case 0:
+			data[fmt.Sprintf("int_col_%d", i)] = row*colCount + i
+		case 1:
+			data[fmt.Sprintf("bigint_col_%d", i)] = int64((row*colCount + i) * 1000)
+		case 2:
+			data[fmt.Sprintf("varchar_col_%d", i)] = fmt.Sprintf("test_string_%d_%d", row, i)
+		case 3:
+			data[fmt.Sprintf("double_col_%d", i)] = float64(row*colCount+i) / 100.0
+		case 4:
+			data[fmt.Sprintf("bool_col_%d", i)] = (row+i)%3 == 0
+		case 5:
+			data[fmt.Sprintf("text_col_%d", i)] = fmt.Sprintf("Long text description for row %d column %d with additional content", row, i)
+		}
+	}
+
+	return data
+}
+
+// BenchmarkParallelReading tests parallel reading performance
+func BenchmarkParallelReading(b *testing.B) {
+	dataDir := "/tmp/benchmark_parallel_reading"
+	defer os.RemoveAll(dataDir)
+
+	// Test different dataset sizes for parallel reading
+	testCases := []struct {
+		name     string
+		rowCount int
+		colCount int
+	}{
+		{"Small_50x8", 50, 8},
+		{"Medium_200x16", 200, 16},
+		{"Large_1000x32", 1000, 32},
+		{"XLarge_5000x16", 5000, 16},
+	}
+
+	for _, tc := range testCases {
+		b.Run(tc.name, func(b *testing.B) {
+			benchmarkParallelReadingScenario(b, dataDir, tc.rowCount, tc.colCount)
+		})
+	}
+}
+
+// benchmarkParallelReadingScenario tests parallel reading for specific scenario
+func benchmarkParallelReadingScenario(b *testing.B, dataDir string, rowCount, colCount int) {
+	testDataDir := fmt.Sprintf("%s_%dx%d", dataDir, rowCount, colCount)
+	config := engine.EngineConfig{
+		DataDir:     testDataDir,
+		StorageMode: engine.BinaryStorage,
+	}
+	eng, err := engine.NewPostgresEngineWithConfig(config)
+	if err != nil {
+		b.Fatalf("Failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	// Create schema and populate data
+	schema := createWideSchema(colCount)
+	tableName := fmt.Sprintf("parallel_read_test_%dx%d", rowCount, colCount)
+	err = eng.CreateTable(tableName, schema)
+	if err != nil {
+		b.Fatalf("Failed to create table: %v", err)
+	}
+
+	// Insert test data
+	for i := range rowCount {
+		data := generateWideData(i, colCount)
+		err := eng.Insert(tableName, data)
+		if err != nil {
+			b.Fatalf("Insert failed: %v", err)
+		}
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	// Benchmark parallel reading
+	for b.Loop() {
+		_, err := eng.Select(tableName, nil)
+		if err != nil {
+			b.Fatalf("Select failed: %v", err)
+		}
+	}
 }
 
 // BenchmarkSerializationSpeed compares serialization speed
@@ -204,7 +523,7 @@ func BenchmarkSerializationSpeed(b *testing.B) {
 		defer eng.Close()
 
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			// Test JSON serialization speed
 			serialized := eng.DeserializeDataForTesting([]byte("id:12345;name:John Doe;email:john.doe@example.com;"))
 			_ = serialized
@@ -228,7 +547,7 @@ func BenchmarkSerializationSpeed(b *testing.B) {
 		}
 
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			// Test binary serialization speed
 			err := eng.Insert("test_table", testData)
 			if err != nil {
@@ -278,8 +597,8 @@ func benchmarkMemoryUsage(b *testing.B, mode engine.StorageMode, rowCount int) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
-		for row := 0; row < rowCount; row++ {
+	for b.Loop() {
+		for row := range rowCount {
 			data := generateBenchmarkData(row, 10)
 			err := eng.Insert("memory_test", data)
 			if err != nil {
@@ -342,7 +661,7 @@ func benchmarkCachePattern(b *testing.B, sequential bool) {
 
 	// Insert test data
 	const numRows = 1000
-	for i := 0; i < numRows; i++ {
+	for i := range numRows {
 		data := map[string]any{
 			"id":    i,
 			"data1": i * 1,
@@ -362,7 +681,7 @@ func benchmarkCachePattern(b *testing.B, sequential bool) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if sequential {
 			// Sequential access pattern (cache-friendly)
 			_, err := eng.Select("cache_test", nil)
@@ -371,7 +690,7 @@ func benchmarkCachePattern(b *testing.B, sequential bool) {
 			}
 		} else {
 			// Random access pattern (less cache-friendly)
-			for j := 0; j < 100; j++ {
+			for j := range 100 {
 				id := (j * 17) % numRows // Pseudo-random access
 				filter := map[string]any{"id": id}
 				_, err := eng.Select("cache_test", filter)
@@ -381,4 +700,30 @@ func benchmarkCachePattern(b *testing.B, sequential bool) {
 			}
 		}
 	}
+}
+
+// BenchmarkLoopOptimizations tests the new loop optimization features
+func BenchmarkLoopOptimizations(b *testing.B) {
+	dataDir := "/tmp/benchmark_loop_optimizations"
+	defer os.RemoveAll(dataDir)
+
+	// Test vectorized processing
+	b.Run("VectorizedProcessing", func(b *testing.B) {
+		benchmarkVectorizedProcessing(b, dataDir)
+	})
+
+	// Test adaptive batching
+	b.Run("AdaptiveBatching", func(b *testing.B) {
+		benchmarkAdaptiveBatching(b, dataDir)
+	})
+
+	// Test parallel serialization
+	b.Run("ParallelSerialization", func(b *testing.B) {
+		benchmarkParallelSerialization(b, dataDir)
+	})
+
+	// Test unrolled value writing
+	b.Run("UnrolledValueWriting", func(b *testing.B) {
+		benchmarkUnrolledValueWriting(b, dataDir)
+	})
 }

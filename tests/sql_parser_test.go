@@ -66,11 +66,11 @@ func TestSQLLexer(t *testing.T) {
 		for _, test := range tests {
 			lexer := parser.NewAdvancedLexer(test.input)
 			token := lexer.Advance()
-			
+
 			if token.Type != parser.STRING {
 				t.Errorf("Expected STRING token, got %s", token.Type.String())
 			}
-			
+
 			if token.Literal != test.expected {
 				t.Errorf("Expected '%s', got '%s'", test.expected, token.Literal)
 			}
@@ -80,10 +80,10 @@ func TestSQLLexer(t *testing.T) {
 	t.Run("Comments", func(t *testing.T) {
 		input := `-- This is a comment
 		SELECT * FROM users; /* Another comment */`
-		
+
 		lexer := parser.NewAdvancedLexer(input)
 		tokens := lexer.GetAllTokens()
-		
+
 		// Should not include comments in output
 		hasComment := false
 		for _, token := range tokens {
@@ -92,7 +92,7 @@ func TestSQLLexer(t *testing.T) {
 				break
 			}
 		}
-		
+
 		if hasComment {
 			t.Error("Comments should be filtered out")
 		}
@@ -108,23 +108,23 @@ func TestSQLParser(t *testing.T) {
 			expected string
 		}{
 			{
-				name: "CreateDatabase",
-				sql:  "CREATE DATABASE testdb;",
+				name:     "CreateDatabase",
+				sql:      "CREATE DATABASE testdb;",
 				expected: "CREATE DATABASE testdb",
 			},
 			{
-				name: "CreateTable",
-				sql:  "CREATE TABLE users (id INT NOT NULL, name VARCHAR(50), PRIMARY KEY (id));",
+				name:     "CreateTable",
+				sql:      "CREATE TABLE users (id INT NOT NULL, name VARCHAR(50), PRIMARY KEY (id));",
 				expected: "CREATE TABLE users (id INT NOT NULL, name VARCHAR(50), PRIMARY KEY (id))",
 			},
 			{
-				name: "CreateIndex",
-				sql:  "CREATE INDEX idx_name ON users (name);",
+				name:     "CreateIndex",
+				sql:      "CREATE INDEX idx_name ON users (name);",
 				expected: "CREATE INDEX idx_name ON users (name)",
 			},
 			{
-				name: "DropTable",
-				sql:  "DROP TABLE users;",
+				name:     "DropTable",
+				sql:      "DROP TABLE users;",
 				expected: "DROP TABLE users",
 			},
 		}
@@ -133,11 +133,11 @@ func TestSQLParser(t *testing.T) {
 			t.Run(test.name, func(t *testing.T) {
 				sqlParser := parser.NewParser(test.sql)
 				stmt, err := sqlParser.Parse()
-				
+
 				if err != nil {
 					t.Fatalf("Parse error: %v", err)
 				}
-				
+
 				if len(stmt.Statements) != 1 {
 					t.Fatalf("Expected 1 statement, got %d", len(stmt.Statements))
 				}
@@ -181,11 +181,11 @@ func TestSQLParser(t *testing.T) {
 			t.Run(test.name, func(t *testing.T) {
 				sqlParser := parser.NewParser(test.sql)
 				stmt, err := sqlParser.Parse()
-				
+
 				if err != nil {
 					t.Fatalf("Parse error: %v", err)
 				}
-				
+
 				if len(stmt.Statements) != 1 {
 					t.Fatalf("Expected 1 statement, got %d", len(stmt.Statements))
 				}
@@ -236,11 +236,11 @@ func TestSQLParser(t *testing.T) {
 			t.Run(test.name, func(t *testing.T) {
 				sqlParser := parser.NewParser(test.sql)
 				stmt, err := sqlParser.Parse()
-				
+
 				if err != nil {
 					t.Fatalf("Parse error: %v", err)
 				}
-				
+
 				if len(stmt.Statements) != 1 {
 					t.Fatalf("Expected 1 statement, got %d", len(stmt.Statements))
 				}
@@ -268,18 +268,18 @@ func TestSQLParser(t *testing.T) {
 
 	t.Run("ErrorHandling", func(t *testing.T) {
 		invalidQueries := []string{
-			"SELECT FROM;",           // Missing table
-			"CREATE TABLE ();",       // Missing table name
-			"INSERT INTO VALUES;",    // Missing table and values
-			"UPDATE SET;",           // Missing table and assignments
-			"DELETE;",               // Missing FROM clause
+			"SELECT FROM;",        // Missing table
+			"CREATE TABLE ();",    // Missing table name
+			"INSERT INTO VALUES;", // Missing table and values
+			"UPDATE SET;",         // Missing table and assignments
+			"DELETE;",             // Missing FROM clause
 		}
 
 		for i, query := range invalidQueries {
 			t.Run(fmt.Sprintf("InvalidQuery_%d", i+1), func(t *testing.T) {
 				sqlParser := parser.NewParser(query)
 				_, err := sqlParser.Parse()
-				
+
 				if err == nil {
 					t.Error("Expected parse error for invalid query")
 				}
@@ -305,7 +305,7 @@ func TestSQLExecutionIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create database: %v", err)
 		}
-		
+
 		if result.Message == "" {
 			t.Error("Expected success message")
 		}
@@ -337,12 +337,12 @@ func TestSQLExecutionIntegration(t *testing.T) {
 				PRIMARY KEY (id)
 			)
 		`
-		
+
 		result, err := pg.ExecuteSQL(createTableSQL)
 		if err != nil {
 			t.Fatalf("Failed to create table: %v", err)
 		}
-		
+
 		if result.Message == "" {
 			t.Error("Expected success message")
 		}
@@ -352,7 +352,7 @@ func TestSQLExecutionIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to get created table: %v", err)
 		}
-		
+
 		if len(table.Schema.Columns) != 4 {
 			t.Errorf("Expected 4 columns, got %d", len(table.Schema.Columns))
 		}
@@ -367,7 +367,7 @@ func TestSQLExecutionIntegration(t *testing.T) {
 				active BOOLEAN
 			)
 		`
-		
+
 		_, err := pg.ExecuteSQL(createTableSQL)
 		if err != nil {
 			t.Fatalf("Failed to create table: %v", err)
@@ -379,7 +379,7 @@ func TestSQLExecutionIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to insert data: %v", err)
 		}
-		
+
 		if result.RowsAffected != 1 {
 			t.Errorf("Expected 1 row affected, got %d", result.RowsAffected)
 		}
@@ -394,7 +394,7 @@ func TestSQLExecutionIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to insert multiple rows: %v", err)
 		}
-		
+
 		if result.RowsAffected != 2 {
 			t.Errorf("Expected 2 rows affected, got %d", result.RowsAffected)
 		}
@@ -405,11 +405,11 @@ func TestSQLExecutionIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to select data: %v", err)
 		}
-		
+
 		if len(result.Data) != 3 {
 			t.Errorf("Expected 3 rows, got %d", len(result.Data))
 		}
-		
+
 		if len(result.Columns) != 3 {
 			t.Errorf("Expected 3 columns, got %d", len(result.Columns))
 		}
@@ -420,7 +420,7 @@ func TestSQLExecutionIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to select with WHERE: %v", err)
 		}
-		
+
 		if len(result.Data) != 1 {
 			t.Errorf("Expected 1 row, got %d", len(result.Data))
 		}
@@ -431,7 +431,7 @@ func TestSQLExecutionIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to update data: %v", err)
 		}
-		
+
 		if result.RowsAffected != 1 {
 			t.Errorf("Expected 1 row affected, got %d", result.RowsAffected)
 		}
@@ -442,7 +442,7 @@ func TestSQLExecutionIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to delete data: %v", err)
 		}
-		
+
 		if result.RowsAffected != 1 {
 			t.Errorf("Expected 1 row affected, got %d", result.RowsAffected)
 		}
@@ -461,7 +461,7 @@ func TestSQLExecutionIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create index: %v", err)
 		}
-		
+
 		if result.Message == "" {
 			t.Error("Expected success message")
 		}
@@ -472,7 +472,7 @@ func TestSQLExecutionIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create unique index: %v", err)
 		}
-		
+
 		if result.Message == "" {
 			t.Error("Expected success message")
 		}
@@ -493,11 +493,11 @@ func TestSQLParserEdgeCases(t *testing.T) {
 			t.Run(fmt.Sprintf("Test_%d", i+1), func(t *testing.T) {
 				sqlParser := parser.NewParser(test)
 				stmt, err := sqlParser.Parse()
-				
+
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				
+
 				if len(stmt.Statements) != 0 {
 					t.Errorf("Expected 0 statements, got %d", len(stmt.Statements))
 				}
@@ -511,14 +511,14 @@ func TestSQLParserEdgeCases(t *testing.T) {
 			INSERT INTO users VALUES (1);
 			SELECT * FROM users;
 		`
-		
+
 		sqlParser := parser.NewParser(sql)
 		stmt, err := sqlParser.Parse()
-		
+
 		if err != nil {
 			t.Fatalf("Parse error: %v", err)
 		}
-		
+
 		if len(stmt.Statements) != 3 {
 			t.Errorf("Expected 3 statements, got %d", len(stmt.Statements))
 		}
@@ -536,11 +536,11 @@ func TestSQLParserEdgeCases(t *testing.T) {
 			t.Run(fmt.Sprintf("Test_%d", i+1), func(t *testing.T) {
 				sqlParser := parser.NewParser(test)
 				stmt, err := sqlParser.Parse()
-				
+
 				if err != nil {
 					t.Fatalf("Parse error: %v", err)
 				}
-				
+
 				if len(stmt.Statements) != 1 {
 					t.Fatalf("Expected 1 statement, got %d", len(stmt.Statements))
 				}
@@ -575,7 +575,7 @@ func TestSQLParserEdgeCases(t *testing.T) {
 			t.Run(test.name, func(t *testing.T) {
 				sqlParser := parser.NewParser(test.sql)
 				_, err := sqlParser.Parse()
-				
+
 				if err != nil {
 					t.Logf("Parse error (may be expected): %v", err)
 				}
@@ -590,7 +590,7 @@ func TestSQLParserPerformance(t *testing.T) {
 		// Generate a large INSERT statement
 		var sql strings.Builder
 		sql.WriteString("INSERT INTO users (id, name) VALUES ")
-		
+
 		for i := 0; i < 1000; i++ {
 			if i > 0 {
 				sql.WriteString(", ")
@@ -622,7 +622,7 @@ func TestSQLParserPerformance(t *testing.T) {
 		}
 
 		t.Logf("Parsed 1000-row INSERT in %v", elapsed)
-		
+
 		// Performance check - should parse in reasonable time
 		if elapsed > time.Second {
 			t.Errorf("Parse took too long: %v", elapsed)
