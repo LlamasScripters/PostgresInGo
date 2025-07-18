@@ -8,12 +8,13 @@ import (
 
 // Lexer represents the lexical analyzer
 type Lexer struct {
-	input        string
-	position     int  // current position in input (points to current char)
-	readPosition int  // current reading position in input (after current char)
-	ch           byte // current char under examination
-	line         int  // current line number
-	column       int  // current column number
+	input         string
+	position      int       // current position in input (points to current char)
+	readPosition  int       // current reading position in input (after current char)
+	ch            byte      // current char under examination
+	line          int       // current line number
+	column        int       // current column number
+	lastTokenType TokenType // last non-whitespace, non-comment token type
 }
 
 // NewLexer creates a new lexer instance
@@ -36,7 +37,7 @@ func (l *Lexer) readChar() {
 	}
 	l.position = l.readPosition
 	l.readPosition++
-	
+
 	if l.ch == '\n' {
 		l.line++
 		l.column = 0
@@ -105,7 +106,11 @@ func (l *Lexer) NextToken() Token {
 		}
 		tok = newToken(MINUS, l.ch, l.position, l.line, l.column)
 	case '*':
-		tok = newToken(ASTERISK, l.ch, l.position, l.line, l.column)
+		if l.lastTokenType == SELECT {
+			tok = newToken(ASTERISK, l.ch, l.position, l.line, l.column)
+		} else {
+			tok = newToken(MULTIPLY, l.ch, l.position, l.line, l.column)
+		}
 	case '/':
 		// Handle SQL block comments (/* comment */)
 		if l.peekChar() == '*' {
@@ -159,12 +164,14 @@ func (l *Lexer) NextToken() Token {
 			tok.Column = l.column
 			tok.Literal = l.readIdentifier()
 			tok.Type = LookupIdent(strings.ToUpper(tok.Literal))
+			l.lastTokenType = tok.Type
 			return tok
 		} else if isDigit(l.ch) {
 			tok.Position = l.position
 			tok.Line = l.line
 			tok.Column = l.column
 			tok.Type, tok.Literal = l.readNumber()
+			l.lastTokenType = tok.Type
 			return tok
 		} else {
 			tok = newToken(ILLEGAL, l.ch, l.position, l.line, l.column)
@@ -172,6 +179,10 @@ func (l *Lexer) NextToken() Token {
 	}
 
 	l.readChar()
+	// Update lastTokenType for non-whitespace, non-comment tokens
+	if tok.Type != WHITESPACE && tok.Type != COMMENT {
+		l.lastTokenType = tok.Type
+	}
 	return tok
 }
 
@@ -313,7 +324,7 @@ func isDigit(ch byte) bool {
 // GetAllTokens returns all tokens from the input
 func (l *Lexer) GetAllTokens() []Token {
 	var tokens []Token
-	
+
 	for {
 		tok := l.NextToken()
 		if tok.Type == EOF {
@@ -325,7 +336,7 @@ func (l *Lexer) GetAllTokens() []Token {
 			tokens = append(tokens, tok)
 		}
 	}
-	
+
 	return tokens
 }
 
@@ -355,7 +366,7 @@ type AdvancedLexer struct {
 func NewAdvancedLexer(input string) *AdvancedLexer {
 	lexer := NewLexer(input)
 	tokens := lexer.GetAllTokens()
-	
+
 	return &AdvancedLexer{
 		Lexer:   lexer,
 		tokens:  tokens,
@@ -435,7 +446,7 @@ func (al *AdvancedLexer) SkipTo(tokenType TokenType) bool {
 // ExpectSequence checks if the next tokens match the expected sequence
 func (al *AdvancedLexer) ExpectSequence(expected ...TokenType) bool {
 	al.SavePosition()
-	
+
 	for i, expectedType := range expected {
 		token := al.PeekN(i)
 		if token.Type != expectedType {
@@ -443,7 +454,7 @@ func (al *AdvancedLexer) ExpectSequence(expected ...TokenType) bool {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
@@ -466,7 +477,7 @@ func (al *AdvancedLexer) ValidateSQL() error {
 	// Check for balanced parentheses
 	parenCount := 0
 	bracketCount := 0
-	
+
 	for _, token := range al.tokens {
 		switch token.Type {
 		case LPAREN:
@@ -485,15 +496,15 @@ func (al *AdvancedLexer) ValidateSQL() error {
 			}
 		}
 	}
-	
+
 	if parenCount != 0 {
 		return NewSyntaxError("Unmatched parentheses", 0, 0)
 	}
-	
+
 	if bracketCount != 0 {
 		return NewSyntaxError("Unmatched brackets", 0, 0)
 	}
-	
+
 	return nil
 }
 
@@ -531,28 +542,28 @@ func NormalizeSQL(sql string) string {
 	// Remove extra whitespace and normalize case for keywords
 	lines := strings.Split(sql, "\n")
 	var normalizedLines []string
-	
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line != "" && !strings.HasPrefix(line, "--") {
 			normalizedLines = append(normalizedLines, line)
 		}
 	}
-	
+
 	return strings.Join(normalizedLines, " ")
 }
 
 // HasKeyword checks if the SQL contains a specific keyword
 func HasKeyword(sql string, keyword TokenType) bool {
 	lexer := NewAdvancedLexer(sql)
-	
+
 	for !lexer.IsAtEnd() {
 		if lexer.Current().Type == keyword {
 			return true
 		}
 		lexer.Advance()
 	}
-	
+
 	return false
 }
 
@@ -560,10 +571,10 @@ func HasKeyword(sql string, keyword TokenType) bool {
 func ExtractTableNames(sql string) []string {
 	lexer := NewAdvancedLexer(sql)
 	var tableNames []string
-	
+
 	for !lexer.IsAtEnd() {
 		token := lexer.Current()
-		
+
 		// Look for patterns like "FROM table_name" or "JOIN table_name"
 		if token.Type == FROM || token.Type == JOIN {
 			lexer.Advance()
@@ -571,9 +582,9 @@ func ExtractTableNames(sql string) []string {
 				tableNames = append(tableNames, lexer.Current().Literal)
 			}
 		}
-		
+
 		lexer.Advance()
 	}
-	
+
 	return tableNames
 }

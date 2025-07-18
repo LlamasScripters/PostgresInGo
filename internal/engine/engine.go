@@ -148,6 +148,32 @@ func (pe *PostgresEngine) Insert(tableName string, data map[string]any) error {
 	return pe.storageManager.InsertTuple(tableName, tuple)
 }
 
+// insertInternal performs insertion without acquiring locks (for internal use)
+func (pe *PostgresEngine) insertInternal(tableName string, data map[string]any) error {
+	// Start transaction
+	txn := pe.transactionManager.Begin()
+	defer func() {
+		if err := recover(); err != nil {
+			pe.transactionManager.Rollback(txn)
+			panic(err)
+		} else {
+			pe.transactionManager.Commit(txn)
+		}
+	}()
+
+	// Validate constraints before insertion
+	if err := pe.validateConstraintsForInsert(tableName, data); err != nil {
+		return err
+	}
+
+	// Create tuple from data using optimized serialization when available
+	tuple := &types.Tuple{
+		Data: pe.serializeDataWithSchema(data, tableName),
+	}
+
+	return pe.storageManager.InsertTuple(tableName, tuple)
+}
+
 // Select retrieves data from a table with optional filtering
 func (pe *PostgresEngine) Select(tableName string, filter map[string]any) ([]*types.Tuple, error) {
 	pe.mu.RLock()
@@ -222,11 +248,80 @@ func (pe *PostgresEngine) Update(tableName string, filter map[string]any, update
 	return updated, nil
 }
 
+// updateInternal performs update without acquiring locks (for internal use)
+func (pe *PostgresEngine) updateInternal(tableName string, filter map[string]any, updates map[string]any) (int64, error) {
+	// Start transaction
+	txn := pe.transactionManager.Begin()
+	defer func() {
+		if err := recover(); err != nil {
+			pe.transactionManager.Rollback(txn)
+			panic(err)
+		} else {
+			pe.transactionManager.Commit(txn)
+		}
+	}()
+
+	// Find matching tuples (use internal method to avoid deadlock)
+	tuples, err := pe.selectInternal(tableName, filter)
+	if err != nil {
+		return 0, err
+	}
+
+	updated := int64(0)
+	for _, tuple := range tuples {
+		// Update tuple data
+		newData := pe.mergeData(tuple.Data, updates)
+		updatedTuple := &types.Tuple{
+			TID:  tuple.TID,
+			Data: newData,
+		}
+
+		err := pe.storageManager.UpdateTuple(tableName, tuple.TID, updatedTuple)
+		if err != nil {
+			return updated, err
+		}
+		updated++
+	}
+
+	return updated, nil
+}
+
 // Delete removes data from a table
 func (pe *PostgresEngine) Delete(tableName string, filter map[string]any) (int64, error) {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
 
+	// Start transaction
+	txn := pe.transactionManager.Begin()
+	defer func() {
+		if err := recover(); err != nil {
+			pe.transactionManager.Rollback(txn)
+			panic(err)
+		} else {
+			pe.transactionManager.Commit(txn)
+		}
+	}()
+
+	// Find matching tuples (use internal method to avoid deadlock)
+	tuples, err := pe.selectInternal(tableName, filter)
+	if err != nil {
+		return 0, err
+	}
+
+	deleted := int64(0)
+	for _, tuple := range tuples {
+		err := pe.storageManager.DeleteTuple(tableName, tuple.TID)
+		if err != nil {
+			return deleted, err
+		}
+		deleted++
+	}
+
+	return deleted, nil
+}
+
+// deleteInternal performs deletion without acquiring locks (for internal use)
+func (pe *PostgresEngine) deleteInternal(tableName string, filter map[string]any) (int64, error) {
 	// Start transaction
 	txn := pe.transactionManager.Begin()
 	defer func() {
@@ -368,17 +463,17 @@ func (pe *PostgresEngine) isBinaryFormat(data []byte) bool {
 	if len(data) < 64 {
 		return false
 	}
-	
+
 	// Read magic number first for fast detection
 	reader := bytes.NewReader(data)
 	var magic uint16
 	binary.Read(reader, binary.LittleEndian, &magic)
-	
+
 	// Check magic number (0x4254 = "BT")
 	if magic != 0x4254 {
 		return false
 	}
-	
+
 	// Read essential header fields to validate structure
 	var header struct {
 		ColumnCount uint16
@@ -387,7 +482,7 @@ func (pe *PostgresEngine) isBinaryFormat(data []byte) bool {
 		Checksum    uint32
 	}
 	binary.Read(reader, binary.LittleEndian, &header)
-	
+
 	// Validate header makes sense
 	if header.ColumnCount == 0 || header.ColumnCount > 10000 {
 		return false
@@ -395,7 +490,7 @@ func (pe *PostgresEngine) isBinaryFormat(data []byte) bool {
 	if header.DataSize == 0 || header.DataSize > uint32(len(data)) {
 		return false
 	}
-	
+
 	// Additional validation: check if total size matches (64-byte header + data)
 	expectedSize := 64 + int(header.DataSize)
 	return expectedSize <= len(data)
@@ -502,6 +597,11 @@ func (pe *PostgresEngine) CreateTable(name string, schema types.Schema) error {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
 
+	return pe.createTableInternal(name, schema)
+}
+
+// createTableInternal creates a new table without acquiring the lock (internal use)
+func (pe *PostgresEngine) createTableInternal(name string, schema types.Schema) error {
 	return pe.storageManager.CreateTable(name, schema)
 }
 
@@ -846,6 +946,101 @@ func (pe *PostgresEngine) AddPrimaryKey(tableName string, columns []string) erro
 	return pe.createIndexInternal(indexName, tableName, columns)
 }
 
+// addPrimaryKeyInternal adds a primary key constraint without acquiring the lock (internal use)
+func (pe *PostgresEngine) addPrimaryKeyInternal(tableName string, columns []string) error {
+	table, err := pe.storageManager.GetTable(tableName)
+	if err != nil {
+		return err
+	}
+
+	// Check if table already has a primary key constraint (not just marked columns)
+	if table.PrimaryKey != nil {
+		return fmt.Errorf("table '%s' already has a primary key", tableName)
+	}
+
+	// Validate that all columns exist
+	for _, col := range columns {
+		if !table.Schema.HasColumn(col) {
+			return fmt.Errorf("column '%s' does not exist in table '%s'", col, tableName)
+		}
+	}
+
+	// Create primary key constraint
+	pkConstraint := &types.Constraint{
+		Name:    fmt.Sprintf("pk_%s", tableName),
+		Type:    types.PrimaryKeyConstraint,
+		Columns: columns,
+	}
+
+	// Add to table
+	table.PrimaryKey = pkConstraint
+	table.Schema.Constraints = append(table.Schema.Constraints, *pkConstraint)
+
+	// Mark columns as primary key
+	for _, colName := range columns {
+		for i := range table.Schema.Columns {
+			if table.Schema.Columns[i].Name == colName {
+				table.Schema.Columns[i].IsPrimaryKey = true
+				table.Schema.Columns[i].Nullable = false // Primary key columns cannot be null
+			}
+		}
+	}
+
+	// Create unique index for primary key
+	indexName := fmt.Sprintf("idx_pk_%s", tableName)
+	return pe.createIndexInternal(indexName, tableName, columns)
+}
+
+// addForeignKeyInternal adds a foreign key constraint without acquiring the lock (internal use)
+func (pe *PostgresEngine) addForeignKeyInternal(tableName string, columns []string, refTable string, refColumns []string, onDelete, onUpdate string) error {
+	table, err := pe.storageManager.GetTable(tableName)
+	if err != nil {
+		return err
+	}
+
+	// Validate that all columns exist
+	for _, col := range columns {
+		if !table.Schema.HasColumn(col) {
+			return fmt.Errorf("column '%s' does not exist in table '%s'", col, tableName)
+		}
+	}
+
+	// Validate that referenced table exists
+	refTableObj, err := pe.storageManager.GetTable(refTable)
+	if err != nil {
+		return fmt.Errorf("referenced table '%s' does not exist", refTable)
+	}
+
+	// Validate that all referenced columns exist
+	for _, col := range refColumns {
+		if !refTableObj.Schema.HasColumn(col) {
+			return fmt.Errorf("referenced column '%s' does not exist in table '%s'", col, refTable)
+		}
+	}
+
+	// Validate that the number of columns matches
+	if len(columns) != len(refColumns) {
+		return fmt.Errorf("number of foreign key columns must match number of referenced columns")
+	}
+
+	// Create foreign key constraint
+	fkConstraint := &types.Constraint{
+		Name:         fmt.Sprintf("fk_%s_%s", tableName, refTable),
+		Type:         types.ForeignKeyConstraint,
+		Columns:      columns,
+		RefTable:     refTable,
+		RefColumns:   refColumns,
+		OnDeleteRule: onDelete,
+		OnUpdateRule: onUpdate,
+	}
+
+	// Add to table
+	table.ForeignKeys = append(table.ForeignKeys, fkConstraint)
+	table.Schema.Constraints = append(table.Schema.Constraints, *fkConstraint)
+
+	return nil
+}
+
 // AddForeignKey adds a foreign key constraint to a table
 func (pe *PostgresEngine) AddForeignKey(tableName string, columns []string, refTable string, refColumns []string, onDelete, onUpdate string) error {
 	pe.mu.Lock()
@@ -904,6 +1099,36 @@ func (pe *PostgresEngine) AddUniqueConstraint(tableName string, columns []string
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
 
+	table, err := pe.storageManager.GetTable(tableName)
+	if err != nil {
+		return err
+	}
+
+	// Validate that all columns exist
+	for _, col := range columns {
+		if !table.Schema.HasColumn(col) {
+			return fmt.Errorf("column '%s' does not exist in table '%s'", col, tableName)
+		}
+	}
+
+	// Create unique constraint
+	uniqueConstraint := &types.Constraint{
+		Name:    fmt.Sprintf("uk_%s_%s", tableName, strings.Join(columns, "_")),
+		Type:    types.UniqueConstraint,
+		Columns: columns,
+	}
+
+	// Add to table
+	table.UniqueKeys = append(table.UniqueKeys, uniqueConstraint)
+	table.Schema.Constraints = append(table.Schema.Constraints, *uniqueConstraint)
+
+	// Create unique index
+	indexName := fmt.Sprintf("idx_uk_%s_%s", tableName, strings.Join(columns, "_"))
+	return pe.createIndexInternal(indexName, tableName, columns)
+}
+
+// addUniqueConstraintInternal adds a unique constraint without acquiring the lock (internal use)
+func (pe *PostgresEngine) addUniqueConstraintInternal(tableName string, columns []string) error {
 	table, err := pe.storageManager.GetTable(tableName)
 	if err != nil {
 		return err
@@ -1237,7 +1462,7 @@ func (pe *PostgresEngine) executeCreateTable(stmt *parser.CreateTableStatement) 
 		schema.Constraints[i] = parser.ConvertConstraintDefinition(constraintDef)
 	}
 
-	err := pe.CreateTable(stmt.Name, schema)
+	err := pe.createTableInternal(stmt.Name, schema)
 	if err != nil {
 		return nil, err
 	}
@@ -1245,17 +1470,17 @@ func (pe *PostgresEngine) executeCreateTable(stmt *parser.CreateTableStatement) 
 	// Table created successfully
 	// Note: Constraints are handled during table creation
 
-	// Process constraints
+	// Process constraints (without acquiring mutex again - already held by ExecuteSQL)
 	for _, constraintDef := range stmt.Constraints {
 		switch constraintDef.Type {
 		case "PRIMARY KEY":
-			err = pe.AddPrimaryKey(stmt.Name, constraintDef.Columns)
+			err = pe.addPrimaryKeyInternal(stmt.Name, constraintDef.Columns)
 		case "FOREIGN KEY":
-			err = pe.AddForeignKey(stmt.Name, constraintDef.Columns,
+			err = pe.addForeignKeyInternal(stmt.Name, constraintDef.Columns,
 				constraintDef.RefTable, constraintDef.RefColumns,
 				constraintDef.OnDelete, constraintDef.OnUpdate)
 		case "UNIQUE":
-			err = pe.AddUniqueConstraint(stmt.Name, constraintDef.Columns)
+			err = pe.addUniqueConstraintInternal(stmt.Name, constraintDef.Columns)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to add constraint: %w", err)
@@ -1306,7 +1531,6 @@ func (pe *PostgresEngine) executeDropIndex(stmt *parser.DropIndexStatement) (*SQ
 // ==================== DML Statement Execution ====================
 
 func (pe *PostgresEngine) executeSelect(stmt *parser.SelectStatement) (*SQLResult, error) {
-	// For now, implement basic SELECT FROM table/view WHERE conditions
 	if stmt.From == nil {
 		return nil, fmt.Errorf("SELECT without FROM clause not supported")
 	}
@@ -1315,67 +1539,84 @@ func (pe *PostgresEngine) executeSelect(stmt *parser.SelectStatement) (*SQLResul
 
 	// Check if it's a view first
 	if view, err := pe.getViewInternal(tableName); err == nil {
-		// It's a view - execute the view's query with additional filters
 		return pe.executeSelectFromView(stmt, view)
 	}
 
-	// It's a table - continue with normal table processing
-	// Build filter from WHERE clause
-	var filter map[string]any
-	if stmt.Where != nil {
-		var err error
-		filter, err = pe.parseWhereCondition(stmt.Where)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse WHERE condition: %w", err)
-		}
-	}
-
-	// Execute the select on table
-	tuples, err := pe.Select(tableName, filter)
+	tuples, err := pe.selectInternal(tableName, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	// Get table schema for column names
-	table, err := pe.GetTable(tableName)
+	table, err := pe.getTableInternal(tableName)
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert tuples to result format
+	// Build columns list
 	var columns []string
 	if len(stmt.Columns) == 1 {
 		if ident, ok := stmt.Columns[0].(*parser.Identifier); ok && ident.Value == "*" {
-			// SELECT * - use all columns
 			for _, col := range table.Schema.Columns {
 				columns = append(columns, col.Name)
 			}
 		}
-	} else {
-		// Specific columns requested
+	}
+	if len(columns) == 0 {
 		for _, colExpr := range stmt.Columns {
-			if ident, ok := colExpr.(*parser.Identifier); ok {
-				columns = append(columns, ident.Value)
+			switch c := colExpr.(type) {
+			case *parser.AliasExpression:
+				columns = append(columns, c.Alias)
+			case *parser.Identifier:
+				columns = append(columns, c.Value)
+			default:
+				columns = append(columns, colExpr.String())
 			}
 		}
 	}
 
+	// Build result data by evaluating each column expression for each row
 	var data []map[string]any
 	for _, tuple := range tuples {
 		rowData := pe.deserializeDataWithSchema(tuple.Data, tableName)
-
-		// Filter columns if not SELECT *
-		if len(columns) > 0 {
-			filteredData := make(map[string]any)
-			for _, col := range columns {
-				if value, exists := rowData[col]; exists {
-					filteredData[col] = value
+		// Evaluate WHERE expression for this row, if present
+		if stmt.Where != nil {
+			cond, err := pe.evaluateExpressionWithRow(stmt.Where, rowData)
+			if err != nil || !isTruthy(cond) {
+				continue
+			}
+		}
+		resultRow := make(map[string]any)
+		for _, colExpr := range stmt.Columns {
+			var colName string
+			switch c := colExpr.(type) {
+			case *parser.AliasExpression:
+				colName = c.Alias
+				val, err := pe.evaluateExpressionWithRow(c.Expr, rowData)
+				if err != nil {
+					resultRow[colName] = nil
+				} else {
+					resultRow[colName] = val
+				}
+			case *parser.Identifier:
+				colName = c.Value
+				if colName == "*" {
+					for k, v := range rowData {
+						resultRow[k] = v
+					}
+				} else {
+					resultRow[colName] = rowData[colName]
+				}
+			default:
+				colName = colExpr.String()
+				val, err := pe.evaluateExpressionWithRow(colExpr, rowData)
+				if err != nil {
+					resultRow[colName] = nil
+				} else {
+					resultRow[colName] = val
 				}
 			}
-			data = append(data, filteredData)
-		} else {
-			data = append(data, rowData)
 		}
+		data = append(data, resultRow)
 	}
 
 	return &SQLResult{
@@ -1429,7 +1670,7 @@ func (pe *PostgresEngine) executeInsert(stmt *parser.InsertStatement) (*SQLResul
 			}
 		}
 
-		err := pe.Insert(stmt.Table, data)
+		err := pe.insertInternal(stmt.Table, data)
 		if err != nil {
 			return nil, err
 		}
@@ -1463,7 +1704,7 @@ func (pe *PostgresEngine) executeUpdate(stmt *parser.UpdateStatement) (*SQLResul
 		}
 	}
 
-	rowsAffected, err := pe.Update(stmt.Table, filter, updates)
+	rowsAffected, err := pe.updateInternal(stmt.Table, filter, updates)
 	if err != nil {
 		return nil, err
 	}
@@ -1485,7 +1726,7 @@ func (pe *PostgresEngine) executeDelete(stmt *parser.DeleteStatement) (*SQLResul
 		}
 	}
 
-	rowsAffected, err := pe.Delete(stmt.Table, filter)
+	rowsAffected, err := pe.deleteInternal(stmt.Table, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -1701,56 +1942,84 @@ func (pe *PostgresEngine) executeSelectInternal(stmt *parser.SelectStatement) (*
 
 	// Check if it's a view first
 	if view, err := pe.getViewInternal(tableName); err == nil {
-		// It's a view - execute the view's query with additional filters
 		return pe.executeSelectFromView(stmt, view)
 	}
 
-	// It's a table - continue with normal table processing
-	// Build filter from WHERE clause
-	var filter map[string]any
-	if stmt.Where != nil {
-		var err error
-		filter, err = pe.parseWhereCondition(stmt.Where)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse WHERE condition: %w", err)
-		}
-	}
-
-	// Get data from storage
-	tuples, err := pe.selectInternal(tableName, filter)
+	tuples, err := pe.selectInternal(tableName, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert tuples to map format
-	var data []map[string]any
-	for _, tuple := range tuples {
-		rowData := pe.deserializeDataWithSchema(tuple.Data, tableName)
-		data = append(data, rowData)
+	table, err := pe.getTableInternal(tableName)
+	if err != nil {
+		return nil, err
 	}
 
-	// Build column list (handle SELECT * vs specific columns)
+	// Build columns list
 	var columns []string
 	if len(stmt.Columns) == 1 {
 		if ident, ok := stmt.Columns[0].(*parser.Identifier); ok && ident.Value == "*" {
-			// SELECT * - return all columns
-			table, err := pe.getTableInternal(tableName)
-			if err != nil {
-				return nil, err
-			}
 			for _, col := range table.Schema.Columns {
 				columns = append(columns, col.Name)
 			}
 		}
 	}
-
 	if len(columns) == 0 {
-		// Specific columns requested
-		for _, col := range stmt.Columns {
-			if ident, ok := col.(*parser.Identifier); ok {
-				columns = append(columns, ident.Value)
+		for _, colExpr := range stmt.Columns {
+			switch c := colExpr.(type) {
+			case *parser.AliasExpression:
+				columns = append(columns, c.Alias)
+			case *parser.Identifier:
+				columns = append(columns, c.Value)
+			default:
+				columns = append(columns, colExpr.String())
 			}
 		}
+	}
+
+	// Build result data by evaluating each column expression for each row
+	var data []map[string]any
+	for _, tuple := range tuples {
+		rowData := pe.deserializeDataWithSchema(tuple.Data, tableName)
+		// Evaluate WHERE expression for this row, if present
+		if stmt.Where != nil {
+			cond, err := pe.evaluateExpressionWithRow(stmt.Where, rowData)
+			if err != nil || !isTruthy(cond) {
+				continue
+			}
+		}
+		resultRow := make(map[string]any)
+		for _, colExpr := range stmt.Columns {
+			var colName string
+			switch c := colExpr.(type) {
+			case *parser.AliasExpression:
+				colName = c.Alias
+				val, err := pe.evaluateExpressionWithRow(c.Expr, rowData)
+				if err != nil {
+					resultRow[colName] = nil
+				} else {
+					resultRow[colName] = val
+				}
+			case *parser.Identifier:
+				colName = c.Value
+				if colName == "*" {
+					for k, v := range rowData {
+						resultRow[k] = v
+					}
+				} else {
+					resultRow[colName] = rowData[colName]
+				}
+			default:
+				colName = colExpr.String()
+				val, err := pe.evaluateExpressionWithRow(colExpr, rowData)
+				if err != nil {
+					resultRow[colName] = nil
+				} else {
+					resultRow[colName] = val
+				}
+			}
+		}
+		data = append(data, resultRow)
 	}
 
 	return &SQLResult{
@@ -1797,9 +2066,200 @@ func (pe *PostgresEngine) parseWhereCondition(where parser.Expression) (map[stri
 
 // evaluateExpression evaluates expressions (simplified implementation)
 func (pe *PostgresEngine) evaluateExpression(expr parser.Expression) (any, error) {
-	// This is a simplified implementation
-	// In a full implementation, this would evaluate complex expressions
-	return nil, fmt.Errorf("complex expressions not yet implemented")
+	switch e := expr.(type) {
+	case *parser.Literal:
+		// Return the literal value directly
+		return e.Value, nil
+
+	case *parser.Identifier:
+		// For now, identifiers are not supported in value contexts
+		// In a full implementation, this would resolve column references, etc.
+		return nil, fmt.Errorf("identifiers not supported in value expressions: %s", e.Value)
+
+	case *parser.QualifiedIdentifier:
+		// For now, qualified identifiers are not supported in value contexts
+		return nil, fmt.Errorf("qualified identifiers not supported in value expressions: %s.%s", e.Table, e.Column)
+
+	case *parser.BinaryExpression:
+		// For now, only simple binary expressions for basic arithmetic
+		left, err := pe.evaluateExpression(e.Left)
+		if err != nil {
+			return nil, err
+		}
+		right, err := pe.evaluateExpression(e.Right)
+		if err != nil {
+			return nil, err
+		}
+
+		switch e.Operator {
+		case "+":
+			return pe.evaluateArithmetic(left, right, "+")
+		case "-":
+			return pe.evaluateArithmetic(left, right, "-")
+		case "*":
+			return pe.evaluateArithmetic(left, right, "*")
+		case "/":
+			return pe.evaluateArithmetic(left, right, "/")
+		default:
+			return nil, fmt.Errorf("binary operator %s not supported in value expressions", e.Operator)
+		}
+
+	case *parser.UnaryExpression:
+		// Handle unary expressions like -5
+		operand, err := pe.evaluateExpression(e.Operand)
+		if err != nil {
+			return nil, err
+		}
+
+		switch e.Operator {
+		case "-":
+			if i, ok := operand.(int); ok {
+				return -i, nil
+			}
+			if f, ok := operand.(float64); ok {
+				return -f, nil
+			}
+			return nil, fmt.Errorf("unary minus not applicable to %T", operand)
+		case "+":
+			// Unary plus is a no-op for numbers
+			if _, ok := operand.(int); ok {
+				return operand, nil
+			}
+			if _, ok := operand.(float64); ok {
+				return operand, nil
+			}
+			return nil, fmt.Errorf("unary plus not applicable to %T", operand)
+		default:
+			return nil, fmt.Errorf("unary operator %s not supported in value expressions", e.Operator)
+		}
+
+	case *parser.FunctionCall:
+		// For now, function calls are not supported in INSERT value expressions
+		return nil, fmt.Errorf("function calls not supported in value expressions: %s", e.Name)
+
+	default:
+		return nil, fmt.Errorf("expression type %T not supported in value contexts", expr)
+	}
+}
+
+// evaluateArithmetic performs basic arithmetic operations
+func (pe *PostgresEngine) evaluateArithmetic(left, right any, operator string) (any, error) {
+	// Handle int operations
+	if l, ok := left.(int); ok {
+		if r, ok := right.(int); ok {
+			switch operator {
+			case "+":
+				return l + r, nil
+			case "-":
+				return l - r, nil
+			case "*":
+				return l * r, nil
+			case "/":
+				if r == 0 {
+					return nil, fmt.Errorf("division by zero")
+				}
+				return l / r, nil
+			}
+		}
+		if r, ok := right.(float64); ok {
+			switch operator {
+			case "+":
+				return float64(l) + r, nil
+			case "-":
+				return float64(l) - r, nil
+			case "*":
+				return float64(l) * r, nil
+			case "/":
+				if r == 0 {
+					return nil, fmt.Errorf("division by zero")
+				}
+				return float64(l) / r, nil
+			}
+		}
+	}
+
+	// Handle float operations
+	if l, ok := left.(float64); ok {
+		if r, ok := right.(int); ok {
+			switch operator {
+			case "+":
+				return l + float64(r), nil
+			case "-":
+				return l - float64(r), nil
+			case "*":
+				return l * float64(r), nil
+			case "/":
+				if r == 0 {
+					return nil, fmt.Errorf("division by zero")
+				}
+				return l / float64(r), nil
+			}
+		}
+		if r, ok := right.(float64); ok {
+			switch operator {
+			case "+":
+				return l + r, nil
+			case "-":
+				return l - r, nil
+			case "*":
+				return l * r, nil
+			case "/":
+				if r == 0 {
+					return nil, fmt.Errorf("division by zero")
+				}
+				return l / r, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("arithmetic operation %s not supported between %T and %T", operator, left, right)
+}
+
+// Add a helper method to evaluate expressions with row context:
+func (pe *PostgresEngine) evaluateExpressionWithRow(expr parser.Expression, row map[string]any) (any, error) {
+	switch e := expr.(type) {
+	case *parser.Literal:
+		return e.Value, nil
+	case *parser.Identifier:
+		if val, ok := row[e.Value]; ok {
+			return val, nil
+		}
+		return nil, fmt.Errorf("column %s not found", e.Value)
+	case *parser.AliasExpression:
+		return pe.evaluateExpressionWithRow(e.Expr, row)
+	case *parser.BinaryExpression:
+		left, err := pe.evaluateExpressionWithRow(e.Left, row)
+		if err != nil {
+			return nil, err
+		}
+		right, err := pe.evaluateExpressionWithRow(e.Right, row)
+		if err != nil {
+			return nil, err
+		}
+		var result any
+		var evalErr error
+		switch e.Operator {
+		case "+":
+			result, evalErr = pe.evaluateArithmetic(left, right, "+")
+		case "-":
+			result, evalErr = pe.evaluateArithmetic(left, right, "-")
+		case "*":
+			result, evalErr = pe.evaluateArithmetic(left, right, "*")
+		case "/":
+			result, evalErr = pe.evaluateArithmetic(left, right, "/")
+		case "=":
+			result = (fmt.Sprintf("%v", left) == fmt.Sprintf("%v", right))
+		case "!=":
+			result = (fmt.Sprintf("%v", left) != fmt.Sprintf("%v", right))
+		default:
+			evalErr = fmt.Errorf("unsupported operator %s", e.Operator)
+		}
+		// Debug output for WHERE evaluation
+		fmt.Printf("[DEBUG] WHERE eval: %s | row: %+v | left: %v | right: %v | op: %s | result: %v\n", expr.String(), row, left, right, e.Operator, result)
+		return result, evalErr
+	default:
+		return nil, fmt.Errorf("unsupported expression type %T", expr)
+	}
 }
 
 func (pe *PostgresEngine) executeCreateView(stmt *parser.CreateViewStatement) (*SQLResult, error) {
@@ -1823,4 +2283,22 @@ func (pe *PostgresEngine) executeDropView(stmt *parser.DropViewStatement) (*SQLR
 	return &SQLResult{
 		Message: fmt.Sprintf("View '%s' dropped successfully", stmt.Name),
 	}, nil
+}
+
+// Add isTruthy helper:
+func isTruthy(val any) bool {
+	switch v := val.(type) {
+	case bool:
+		return v
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0.0
+	case nil:
+		return false
+	default:
+		return v != nil
+	}
 }

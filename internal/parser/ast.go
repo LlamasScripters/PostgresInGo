@@ -440,6 +440,18 @@ func (ae *AssignmentExpression) String() string {
 }
 func (ae *AssignmentExpression) Type() string { return "AssignmentExpression" }
 
+// AliasExpression represents an expression with an alias (e.g., a + b AS sum)
+type AliasExpression struct {
+	Expr  Expression
+	Alias string
+}
+
+func (ae *AliasExpression) expressionNode() {}
+func (ae *AliasExpression) String() string {
+	return fmt.Sprintf("%s AS %s", ae.Expr.String(), ae.Alias)
+}
+func (ae *AliasExpression) Type() string { return "AliasExpression" }
+
 // ==================== Clauses ====================
 
 // FromClause represents FROM table

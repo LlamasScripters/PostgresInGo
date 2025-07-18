@@ -155,6 +155,11 @@ type StorageManager struct {
 
 // NewStorageManager creates a new storage manager
 func NewStorageManager(dataDir string) (*StorageManager, error) {
+	// Ensure the data directory exists
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create data directory: %w", err)
+	}
+
 	dm, err := NewDiskManager(dataDir + "/data.db")
 	if err != nil {
 		return nil, err
@@ -369,9 +374,42 @@ func (sm *StorageManager) UpdateTuple(tableName string, tid types.TupleID, tuple
 		return err
 	}
 
+	// Read the existing tuple
+	existingTuple := (*types.Tuple)(nil)
+	tuples, exists := sm.tableTuples[tableName]
+	if exists {
+		for _, t := range tuples {
+			if t.TID.PageID == tid.PageID && t.TID.Offset == tid.Offset {
+				existingTuple = t
+				break
+			}
+		}
+	}
+
+	// Merge new data with existing data
+	mergedTuple := tuple
+	if existingTuple != nil {
+		existingData := sm.deserializeTupleData(existingTuple.Data)
+		newData := sm.deserializeTupleData(tuple.Data)
+		for k, v := range existingData {
+			if _, ok := newData[k]; !ok {
+				newData[k] = v
+			}
+		}
+		// Re-serialize merged data
+		mergedTuple = &types.Tuple{
+			TID:  tid,
+			Data: existingTuple.Data,
+		}
+		mergedTuple.Data = existingTuple.Data
+		if serialized, ok := sm.serializeTupleData(newData, sm.tables[tableName].Schema); ok {
+			mergedTuple.Data = serialized
+		}
+	}
+
 	// Update tuple data on disk
 	offset := int(tid.Offset)
-	tupleSize := len(tuple.Data)
+	tupleSize := len(mergedTuple.Data)
 
 	if offset+tupleSize > len(page.Data) {
 		return fmt.Errorf("updated tuple too large for page")
@@ -387,7 +425,7 @@ func (sm *StorageManager) UpdateTuple(tableName string, tid types.TupleID, tuple
 	}
 
 	// Write new data
-	copy(page.Data[offset:offset+tupleSize], tuple.Data)
+	copy(page.Data[offset:offset+tupleSize], mergedTuple.Data)
 
 	// Write page to disk
 	err = sm.diskManager.WritePage(page)
@@ -396,12 +434,11 @@ func (sm *StorageManager) UpdateTuple(tableName string, tid types.TupleID, tuple
 	}
 
 	// Update in-memory cache
-	tuples, exists := sm.tableTuples[tableName]
 	if exists {
 		for i, existingTuple := range tuples {
 			if existingTuple.TID.PageID == tid.PageID && existingTuple.TID.Offset == tid.Offset {
-				tuple.TID = tid // Preserve the TID
-				sm.tableTuples[tableName][i] = tuple
+				mergedTuple.TID = tid // Preserve the TID
+				sm.tableTuples[tableName][i] = mergedTuple
 				break
 			}
 		}
@@ -1069,6 +1106,21 @@ func (sm *StorageManager) deserializeTupleData(data []byte) map[string]any {
 	}
 
 	return result
+}
+
+// serializeTupleData serializes a map[string]any to the tuple data format
+func (sm *StorageManager) serializeTupleData(data map[string]any, schema types.Schema) ([]byte, bool) {
+	// Simple serialization: key:value;key:value;...
+	var sb strings.Builder
+	for _, col := range schema.Columns {
+		if v, ok := data[col.Name]; ok && v != nil {
+			sb.WriteString(col.Name)
+			sb.WriteString(":")
+			sb.WriteString(fmt.Sprintf("%v", v))
+			sb.WriteString(";")
+		}
+	}
+	return []byte(sb.String()), true
 }
 
 // EnforceReferentialIntegrity enforces referential integrity on delete/update

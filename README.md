@@ -4,93 +4,123 @@
 
 Ce projet implémente un **database engine** compatible PostgreSQL développé en Go. Il fournit un **RDBMS** (Relational Database Management System) complet avec **SQL parser**, stockage, transactions, indexation et contraintes d'intégrité référentielle.
 
+---
+
+## 🗂️ Navigation rapide du code
+
+| Fonctionnalité / Démo                | Fichier                                 | Lignes clés         | Description rapide |
+|--------------------------------------|-----------------------------------------|---------------------|--------------------|
+| **Entrée principale CLI**            | [`main.go`](main.go)                    | [main](main.go#L14), [runDemo](main.go#L224) | Point d'entrée, gestion des flags, exécution SQL, affichage résultats |
+| **Démo complète (features)**         | [`demo.go`](demo.go)                    | [runComprehensiveDemo](demo.go#L15), [demoCRUDOperations](demo.go#L528), [demoSQLParser](demo.go#L704), [demoConstraints](demo.go#L901), [demoIndexes](demo.go#L1092), [demoViews](demo.go#L1120), [demoJoins](demo.go#L1251), [demoAggregates](demo.go#L1295), [demoTransactions](demo.go#L1394), [demoPerformance](demo.go#L1436), [demoAdvancedFeatures](demo.go#L1496) | Démo guidée de toutes les fonctionnalités |
+| **Démo SQL Parser**                  | [`examples/sql-demo/main.go`](examples/sql-demo/main.go) | [main](examples/sql-demo/main.go#L11), [printTableResult](examples/sql-demo/main.go#L209) | Démonstration parser SQL, DDL/DML, index, types, requêtes complexes |
+| **Démo Fonctions d'Agrégat**         | [`examples/aggregate-demo/main.go`](examples/aggregate-demo/main.go) | [main](examples/aggregate-demo/main.go#L10), [testAggregateParsing](examples/aggregate-demo/main.go#L20), [testAggregateOperator](examples/aggregate-demo/main.go#L92) | Parsing et exécution d'agrégats, tests GROUP BY/HAVING, opérateurs |
+| **Engine principal**                 | [`internal/engine/engine.go`](internal/engine/engine.go) | [NewPostgresEngine](internal/engine/engine.go#L51), [Insert](internal/engine/engine.go#L122), [Select](internal/engine/engine.go#L177), [Update](internal/engine/engine.go#L210), [Delete](internal/engine/engine.go#L289), [CreateDatabase](internal/engine/engine.go#L536), [CreateTable](internal/engine/engine.go#L595), [CreateIndex](internal/engine/engine.go#L617), [BeginTransaction](internal/engine/engine.go#L653), [ExecuteSQL](internal/engine/engine.go#L1342) | Initialisation, gestion des bases, exécution requêtes |
+| **Parser SQL**                       | [`internal/parser/parser.go`](internal/parser/parser.go) | [NewParser](internal/parser/parser.go#L25), [Parse](internal/parser/parser.go#L35), [parseCreateTable](internal/parser/parser.go#L149), [parseSelectStatement](internal/parser/parser.go#L394), [parseInsertStatement](internal/parser/parser.go#L501), [parseUpdateStatement](internal/parser/parser.go#L584), [parseDeleteStatement](internal/parser/parser.go#L643) | Parsing SQL, AST, gestion erreurs |
+| **Lexer SQL**                        | [`internal/parser/lexer.go`](internal/parser/lexer.go) | [NewLexer](internal/parser/lexer.go#L20), [NextToken](internal/parser/lexer.go#L57), [GetAllTokens](internal/parser/lexer.go#L324) | Découpage lexical SQL |
+| **Types SQL**                        | [`internal/types/types.go`](internal/types/types.go) | [DataType](internal/types/types.go#L10), [Column](internal/types/types.go#L130), [Schema](internal/types/types.go#L142), [Table](internal/types/types.go#L196), [GetTypeInfo](internal/types/types.go#L426), [IsNumericType](internal/types/types.go#L544) | Système de types, définitions |
+| **Stockage**                         | [`internal/storage/storage.go`](internal/storage/storage.go) | [NewStorageManager](internal/storage/storage.go#L156), [CreateTable](internal/storage/storage.go#L189), [InsertTuple](internal/storage/storage.go#L214), [SelectTuple](internal/storage/storage.go#L310), [UpdateTuple](internal/storage/storage.go#L361), [DeleteTuple](internal/storage/storage.go#L450) | Interface stockage |
+| **Stockage binaire**                 | [`internal/storage/binary_storage.go`](internal/storage/binary_storage.go) | ... | Implémentation stockage binaire |
+| **Index B-Tree**                     | [`internal/index/btree.go`](internal/index/btree.go) | [NewBTree](internal/index/btree.go#L32), [Insert](internal/index/btree.go#L71), [Search](internal/index/btree.go#L157), [Delete](internal/index/btree.go#L190), [RangeScan](internal/index/btree.go#L236) | Indexation B-Tree |
+| **Transactions**                     | [`internal/transaction/transaction.go`](internal/transaction/transaction.go) | [NewTransactionManager](internal/transaction/transaction.go#L22), [Begin](internal/transaction/transaction.go#L37), [Commit](internal/transaction/transaction.go#L66), [Rollback](internal/transaction/transaction.go#L98) | Gestion transactions, isolation |
+| **Tests parser SQL**                 | [`tests/sql_parser_test.go`](tests/sql_parser_test.go) | ... | Tests lexer, parser, intégration |
+| **Tests vues**                       | [`tests/views_test.go`](tests/views_test.go) | ... | TDD sur les vues |
+| **Tests agrégats**                   | [`tests/aggregate_functions_test.go`](tests/aggregate_functions_test.go) | ... | Tests fonctions d'agrégat |
+
+> **Astuce navigation** : Utilisez la recherche par nom de fichier et ligne pour accéder rapidement à la logique souhaitée.
+
+### Liens directs importants
+
+- **Engine** :
+  - [NewPostgresEngine](internal/engine/engine.go#L51) · [Insert](internal/engine/engine.go#L122) · [Select](internal/engine/engine.go#L177) · [Update](internal/engine/engine.go#L210) · [Delete](internal/engine/engine.go#L289) · [CreateDatabase](internal/engine/engine.go#L536) · [CreateTable](internal/engine/engine.go#L595) · [CreateIndex](internal/engine/engine.go#L617) · [BeginTransaction](internal/engine/engine.go#L653) · [ExecuteSQL](internal/engine/engine.go#L1342)
+- **Parser** :
+  - [NewParser](internal/parser/parser.go#L25) · [Parse](internal/parser/parser.go#L35) · [parseCreateTable](internal/parser/parser.go#L149) · [parseSelectStatement](internal/parser/parser.go#L394) · [parseInsertStatement](internal/parser/parser.go#L501) · [parseUpdateStatement](internal/parser/parser.go#L584) · [parseDeleteStatement](internal/parser/parser.go#L643)
+- **Lexer** :
+  - [NewLexer](internal/parser/lexer.go#L20) · [NextToken](internal/parser/lexer.go#L57) · [GetAllTokens](internal/parser/lexer.go#L324)
+- **Types** :
+  - [DataType](internal/types/types.go#L10) · [Column](internal/types/types.go#L130) · [Schema](internal/types/types.go#L142) · [Table](internal/types/types.go#L196) · [GetTypeInfo](internal/types/types.go#L426) · [IsNumericType](internal/types/types.go#L544)
+- **Stockage** :
+  - [NewStorageManager](internal/storage/storage.go#L156) · [CreateTable](internal/storage/storage.go#L189) · [InsertTuple](internal/storage/storage.go#L214) · [SelectTuple](internal/storage/storage.go#L310) · [UpdateTuple](internal/storage/storage.go#L361) · [DeleteTuple](internal/storage/storage.go#L450)
+- **Index B-Tree** :
+  - [NewBTree](internal/index/btree.go#L32) · [Insert](internal/index/btree.go#L71) · [Search](internal/index/btree.go#L157) · [Delete](internal/index/btree.go#L190) · [RangeScan](internal/index/btree.go#L236)
+- **Transactions** :
+  - [NewTransactionManager](internal/transaction/transaction.go#L22) · [Begin](internal/transaction/transaction.go#L37) · [Commit](internal/transaction/transaction.go#L66) · [Rollback](internal/transaction/transaction.go#L98)
+
+---
+
 ## ✨ Fonctionnalités principales
 
 ### 🔤 SQL Parser
-- **Lexer** complet avec tokenisation SQL
-- **Parser** supportant DDL et DML
-- **AST** (Abstract Syntax Tree) pour représentation des requêtes
-- **Intégration** transparente avec l'engine
-- **Gestion d'erreurs** détaillée avec position des erreurs
+- **Lexer** complet avec tokenisation SQL ([internal/parser/lexer.go])
+- **Parser** supportant DDL et DML ([internal/parser/parser.go])
+- **AST** (Abstract Syntax Tree) ([internal/parser/ast.go])
+- **Gestion d'erreurs** détaillée
 
 ### 🗄️ Database Management
-- Création et suppression de databases
-- Gestion des **schemas** et **metadata**
-- Support **multi-database**
+- Création/suppression de bases ([internal/engine/engine.go])
+- Gestion des **schemas** ([internal/types/types.go])
+- Support multi-database
 
 ### 📊 PostgreSQL Data Types
-- **Integer types** : SMALLINT, INT, BIGINT, SERIAL, BIGSERIAL
-- **Numeric types** : NUMERIC, DECIMAL, REAL, DOUBLE, FLOAT, MONEY
-- **Character types** : CHAR, VARCHAR, TEXT
-- **Temporal types** : DATE, TIME, TIMESTAMP, INTERVAL
-- **Boolean types** : BOOLEAN
-- **JSON types** : JSON, JSONB
-- **Network types** : INET, CIDR, MACADDR
-- **Geometric types** : POINT, LINE, BOX, CIRCLE, POLYGON
-- **UUID types** et **Array types**
+- Types supportés : voir [internal/types/types.go]
 
 ### 🔧 SQL Operations
-- **DDL** (Data Definition Language) : CREATE TABLE, DROP TABLE, ALTER TABLE
-- **DML** (Data Manipulation Language) : INSERT, UPDATE, DELETE, SELECT
-- **Views** : CREATE VIEW, DROP VIEW, SELECT FROM VIEW
-- **Constraints** : PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK
-- **Joins** : INNER JOIN, LEFT JOIN, RIGHT JOIN, FULL JOIN
-- **Aggregations** : COUNT(*), COUNT(column), COUNT(DISTINCT column), SUM, AVG, MIN, MAX, GROUP BY, HAVING
-- **Subqueries** et **CTEs** (Common Table Expressions)
+- DDL/DML : CREATE, INSERT, SELECT, UPDATE, DELETE ([main.go], [demo.go])
+- Vues, contraintes, agrégats, jointures, sous-requêtes ([demo.go], [examples/sql-demo/main.go])
 
 ### 🚀 Performance Optimizations
-- **Binary storage** haute performance
-- **B-Tree indexes** pour accès rapide
-- **Cache-aligned** structures pour optimisation mémoire
-- **Transaction management** avec isolation
-- **Connection pooling** efficace
+- Stockage binaire ([internal/storage/binary_storage.go])
+- Index B-Tree ([internal/index/btree.go])
+- Transactions ([internal/transaction/transaction.go])
 
 ### 🔒 Data Integrity
-- **Referential integrity constraints**
-- **Data type validation**
-- **ACID transactions** compliance
-- **Optimistic locking**
+- Contraintes référentielles, validation types, ACID ([demo.go])
 
-## 🏗️ Architecture
+---
+
+## 🏗️ Architecture du projet
 
 ```
 PostgresInGo/
-├── main.go                    # Application entry point
+├── main.go                    # Entrée CLI principale (voir lignes 1-180)
+├── demo.go                    # Démo guidée de toutes les features (voir lignes 1-900)
 ├── internal/
-│   ├── engine/               # Core database engine
-│   │   └── engine.go         # Engine configuration & initialization
-│   ├── parser/               # SQL Parser subsystem
-│   │   ├── tokens.go         # SQL token definitions
-│   │   ├── lexer.go          # SQL lexical analyzer
-│   │   ├── ast.go            # Abstract Syntax Tree definitions
-│   │   └── parser.go         # SQL parser implementation
-│   ├── execution/            # Query execution engine
-│   │   └── execution.go      # Execution operators & query plans
-│   ├── storage/              # Storage manager
-│   │   ├── storage.go        # Storage interface
-│   │   └── binary_storage.go # Optimized binary storage
-│   ├── index/               # Indexing subsystem
-│   │   └── btree.go         # B-Tree index implementation
-│   ├── transaction/         # Transaction manager
-│   │   └── transaction.go   # Isolation & concurrency control
-│   └── types/               # Type system
-│       ├── types.go         # Data type definitions
-│       └── types_test.go    # Type system tests
-├── tests/                   # Test files
-│   ├── sql_parser_test.go  # SQL parser comprehensive tests
-│   ├── views_test.go       # Views TDD tests (CREATE/DROP/SELECT)
-│   ├── views_parsing_test.go # Views parsing unit tests
-│   └── ...                 # Other comprehensive tests
-├── examples/                # Example applications
-│   └── sql_demo.go         # SQL parser demonstration
-├── data/                    # Data directory
-└── demo_data/              # Demo data samples
+│   ├── engine/               # Moteur principal
+│   │   └── engine.go         # Initialisation, gestion bases
+│   ├── parser/               # Sous-système SQL Parser
+│   │   ├── tokens.go         # Définition tokens SQL
+│   │   ├── lexer.go          # Analyseur lexical
+│   │   ├── ast.go            # AST
+│   │   └── parser.go         # Parser SQL
+│   ├── execution/            # Exécution requêtes
+│   │   └── execution.go      # Opérateurs, plans
+│   ├── storage/              # Stockage
+│   │   ├── storage.go        # Interface stockage
+│   │   └── binary_storage.go # Stockage binaire
+│   ├── index/                # Indexation
+│   │   └── btree.go          # B-Tree
+│   ├── transaction/          # Transactions
+│   │   └── transaction.go    # Isolation, contrôle
+│   └── types/                # Système de types
+│       ├── types.go          # Types SQL
+│       └── types_test.go     # Tests types
+├── tests/                    # Tests
+│   ├── sql_parser_test.go    # Tests parser SQL
+│   ├── views_test.go         # Tests vues
+│   ├── aggregate_functions_test.go # Tests agrégats
+│   └── ...
+├── examples/
+│   ├── sql-demo/main.go      # Démo parser SQL
+│   └── aggregate-demo/main.go # Démo agrégats
+├── data/                     # Données
+└── demo_data/                # Données démo
 ```
+
+---
 
 ## 🚀 Installation et utilisation
 
-### Prerequisites
-- Go 1.24.1 ou version supérieure
+### Prérequis
+- Go 1.24.1 ou supérieur
 
 ### Installation
 ```bash
@@ -99,204 +129,37 @@ cd PostgresInGo
 go mod tidy
 ```
 
-### Execution
+### Exécution
 ```bash
 go run main.go
 ```
 
-### Usage Example
-```go
-package main
+### Exemples d'utilisation
+- **Démo complète** : `go run demo.go` ([demo.go])
+- **Démo SQL Parser** : `go run examples/sql-demo/main.go` ([examples/sql-demo/main.go])
+- **Démo Agrégats** : `go run examples/aggregate-demo/main.go` ([examples/aggregate-demo/main.go])
 
-import (
-    "github.com/LlamasScripters/PostgresInGo/internal/engine"
-)
+---
 
-func main() {
-    // Initialize database engine
-    pg, err := engine.NewPostgresEngine("./data")
-    if err != nil {
-        log.Fatal("Engine initialization failed:", err)
-    }
-    defer pg.Close()
+## 🧪 Tests
 
-    // Create database with SQL parser
-    result, err := pg.ExecuteSQL("CREATE DATABASE exemple")
-    if err != nil {
-        log.Fatal("Database creation error:", err)
-    }
+- **Tests parser SQL** : `go test ./tests/sql_parser_test.go -v`
+- **Tests vues** : `go test ./tests/views_test.go -v`
+- **Tests agrégats** : `go test ./tests/aggregate_functions_test.go -v`
+- **Tous les tests** : `go test ./...`
 
-    // Create table with constraints using SQL parser
-    result, err = pg.ExecuteSQL(`
-        CREATE TABLE utilisateurs (
-            id INT NOT NULL,
-            nom VARCHAR(50) NOT NULL,
-            email VARCHAR(100),
-            age INT,
-            PRIMARY KEY (id)
-        )
-    `)
+---
 
-    // Insert data with SQL parser
-    result, err = pg.ExecuteSQL(`
-        INSERT INTO utilisateurs (id, nom, email, age) 
-        VALUES (1, 'Alice', 'alice@example.com', 25)
-    `)
+## 📖 Pour aller plus loin
 
-    // Query data with SQL parser
-    result, err = pg.ExecuteSQL("SELECT * FROM utilisateurs WHERE age > 20")
+- Consultez les fichiers référencés dans le tableau ci-dessus pour explorer chaque fonctionnalité.
+- Les démos (`demo.go`, `examples/sql-demo/main.go`, `examples/aggregate-demo/main.go`) montrent l'utilisation réelle du moteur, du parser, des contraintes, des index, des vues, etc.
+- Les tests dans `tests/` couvrent tous les cas d'usage et edge cases.
 
-    // Create and use views with SQL parser
-    result, err = pg.ExecuteSQL(`
-        CREATE VIEW utilisateurs_actifs AS 
-        SELECT id, nom, email FROM utilisateurs WHERE age >= 18
-    `)
-    
-    // Query from view
-    result, err = pg.ExecuteSQL("SELECT * FROM utilisateurs_actifs")
-    
-    // Use aggregate functions
-    result, err = pg.ExecuteSQL("SELECT COUNT(*), AVG(age) FROM utilisateurs")
-    
-    // Complex aggregates with GROUP BY
-    result, err = pg.ExecuteSQL(`
-        SELECT 
-            CASE WHEN age < 30 THEN 'Young' ELSE 'Senior' END as age_group,
-            COUNT(*) as total,
-            AVG(age) as avg_age,
-            MIN(age) as min_age,
-            MAX(age) as max_age
-        FROM utilisateurs 
-        GROUP BY age_group
-        HAVING COUNT(*) > 0
-    `)
-}
-```
-
-## 🧪 Testing
-
-Le projet inclut une **comprehensive test suite** avec tests spécialisés pour le SQL parser :
-
-### Tests du SQL Parser
-
-```bash
-# Test complet du SQL parser
-go test ./tests/sql_parser_test.go -v
-
-# Test des vues (CREATE/DROP/SELECT FROM VIEW)
-go test ./tests/views_test.go -v
-go test ./tests/views_parsing_test.go -v
-
-# Test du lexer SQL
-go test ./tests/sql_parser_test.go -v -run "TestSQLLexer"
-
-# Test du parser DDL (CREATE, DROP, etc.)
-go test ./tests/sql_parser_test.go -v -run "TestSQLParser/DDLStatements"
-
-# Test du parser DML (SELECT, INSERT, etc.)
-go test ./tests/sql_parser_test.go -v -run "TestSQLParser/DMLStatements"
-
-# Test d'intégration SQL avec l'engine
-go test ./tests/sql_parser_test.go -v -run "TestSQLExecutionIntegration"
-
-# Test des cas limites du parser
-go test ./tests/sql_parser_test.go -v -run "TestSQLParserEdgeCases"
-
-# Benchmarks de performance du parser
-go test ./tests/sql_parser_test.go -v -run "BenchmarkSQLParser"
-```
-
-### Démonstration du SQL Parser
-
-```bash
-# Exécuter la démonstration complète
-go run examples/sql_demo.go
-
-# Démonstration des fonctions d'agrégats
-go run examples/aggregate_demo.go
-
-# Build de l'exemple (vérification compilation)
-go build ./examples/sql_demo.go
-go build ./examples/aggregate_demo.go
-```
-
-### Tests Généraux
-
-```bash
-# Run all tests
-go test ./...
-
-# Verbose testing
-go test -v ./...
-
-# Performance benchmarks
-go test -bench=. ./...
-
-# Module-specific tests
-go test ./internal/types -v
-go test ./internal/storage -v
-
-# Test des fonctions d'agrégats
-go test ./tests/aggregate_functions_test.go -v
-```
-
-### Test Coverage
-- **SQL Parser** : Tests complets du lexer, parser et intégration
-- **Views System** : Tests TDD complets (CREATE VIEW, DROP VIEW, SELECT FROM VIEW)
-- **Aggregate Functions** : Tests complets des fonctions COUNT, SUM, AVG, MIN, MAX avec GROUP BY/HAVING
-- **Unit tests** : Tous les modules (engine, storage, types, etc.)
-- **Integration tests** : Opérations SQL complètes avec parser
-- **Performance benchmarks** : Load testing et optimisations
-- **Edge cases** : Gestion d'erreurs et cas limites SQL
-
-## ⚙️ Configuration
-
-### Modes de stockage
-```go
-// Configuration du moteur
-config := &engine.EngineConfig{
-    DataDir:     "./data",
-    StorageMode: engine.BinaryStorage, // ou JSONStorage
-}
-```
-
-### Options de performance
-- **BinaryStorage** : Stockage binaire optimisé (recommandé)
-- **JSONStorage** : Stockage JSON (compatible, plus lent)
-- **Cache aligné** : Optimisation mémoire automatique
-- **Index automatiques** : Création d'index sur les clés primaires
-
-## 📈 Performance
-
-### Benchmarks
-- **Stockage binaire** : ~10x plus rapide que JSON
-- **Index B-Tree** : Recherche O(log n)
-- **Transactions** : Support ACID complet
-- **Mémoire** : Gestion optimisée avec cache aligné
-
-### Optimisations implémentées
-- Sérialisation binaire haute performance
-- Structures de données cache-alignées
-- Pool de connexions réutilisables
-- Indexation automatique des clés primaires
-
-## 🔄 Développement
-
-### Structure du code
-- Code modulaire et extensible
-- Interfaces bien définies
-- Gestion d'erreurs robuste
-- Documentation complète
-
-### Standards de qualité
-- Tests unitaires exhaustifs
-- Gestion des erreurs appropriée
-- Code formaté avec `gofmt`
-- Respect des conventions Go
+---
 
 ## 📊 Statistiques du projet
 
-- **Lignes de code** : ~10,000+ lignes Go
 - **Modules** : 7 modules principaux (+ SQL Parser)
 - **Types supportés** : 50+ types PostgreSQL
 - **Tokens SQL** : 100+ tokens supportés

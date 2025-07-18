@@ -71,7 +71,7 @@ func (op *SeqScanOperator) Next() (*types.Tuple, error) {
 	// Simplified sequential scan
 	for _, pageID := range op.table.Pages {
 		op.currentTID.PageID = pageID
-		
+
 		// Try to get tuple from current position
 		tuple, err := op.storage.SelectTuple(op.table.Name, op.currentTID)
 		if err != nil {
@@ -130,7 +130,7 @@ func (op *IndexScanOperator) Open() error {
 		return fmt.Errorf("operator already opened")
 	}
 	op.opened = true
-	
+
 	// Initialize cursor based on predicate
 	if op.predicate != nil {
 		cursor, err := op.index.RangeScan(op.predicate.Value, op.predicate.Value)
@@ -139,7 +139,7 @@ func (op *IndexScanOperator) Open() error {
 		}
 		op.cursor = cursor
 	}
-	
+
 	return nil
 }
 
@@ -181,12 +181,12 @@ func (op *IndexScanOperator) GetSchema() types.Schema {
 
 // NestedLoopJoinOperator performs nested loop join
 type NestedLoopJoinOperator struct {
-	left       Operator
-	right      Operator
-	predicate  *JoinPredicate
-	leftTuple  *types.Tuple
-	rightOpen  bool
-	opened     bool
+	left      Operator
+	right     Operator
+	predicate *JoinPredicate
+	leftTuple *types.Tuple
+	rightOpen bool
+	opened    bool
 }
 
 // NewNestedLoopJoinOperator creates a new nested loop join operator
@@ -204,12 +204,12 @@ func (op *NestedLoopJoinOperator) Open() error {
 		return fmt.Errorf("operator already opened")
 	}
 	op.opened = true
-	
+
 	err := op.left.Open()
 	if err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -227,7 +227,7 @@ func (op *NestedLoopJoinOperator) Next() (*types.Tuple, error) {
 				return nil, err
 			}
 			op.leftTuple = leftTuple
-			
+
 			// Open right operator for this left tuple
 			if !op.rightOpen {
 				err = op.right.Open()
@@ -274,11 +274,11 @@ func (op *NestedLoopJoinOperator) Close() error {
 func (op *NestedLoopJoinOperator) GetSchema() types.Schema {
 	leftSchema := op.left.GetSchema()
 	rightSchema := op.right.GetSchema()
-	
+
 	joinedSchema := types.Schema{
 		Columns: append(leftSchema.Columns, rightSchema.Columns...),
 	}
-	
+
 	return joinedSchema
 }
 
@@ -287,7 +287,7 @@ func (op *NestedLoopJoinOperator) createJoinedTuple(leftTuple, rightTuple *types
 	// Deserialize both tuples to extract their data
 	leftData := op.deserializeTupleData(leftTuple.Data)
 	rightData := op.deserializeTupleData(rightTuple.Data)
-	
+
 	// Merge the data maps
 	joinedData := make(map[string]interface{})
 	for k, v := range leftData {
@@ -296,12 +296,12 @@ func (op *NestedLoopJoinOperator) createJoinedTuple(leftTuple, rightTuple *types
 	for k, v := range rightData {
 		joinedData[k] = v
 	}
-	
+
 	// Serialize the joined data
 	serializedData := op.serializeTupleData(joinedData)
-	
+
 	return &types.Tuple{
-		TID:  types.TupleID{PageID: leftTuple.TID.PageID, Offset: leftTuple.TID.Offset}, 
+		TID:  types.TupleID{PageID: leftTuple.TID.PageID, Offset: leftTuple.TID.Offset},
 		Data: serializedData,
 	}
 }
@@ -310,20 +310,20 @@ func (op *NestedLoopJoinOperator) createJoinedTuple(leftTuple, rightTuple *types
 func (op *NestedLoopJoinOperator) deserializeTupleData(data []byte) map[string]interface{} {
 	result := make(map[string]interface{})
 	dataStr := string(data)
-	
+
 	// Split by semicolon to get key-value pairs
 	pairs := strings.Split(dataStr, ";")
 	for _, pair := range pairs {
 		if len(pair) == 0 {
 			continue
 		}
-		
+
 		// Split by colon to get key and value
 		parts := strings.SplitN(pair, ":", 2)
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
 			value := strings.TrimSpace(parts[1])
-			
+
 			// Try to parse as number
 			if intVal, err := strconv.Atoi(value); err == nil {
 				result[key] = intVal
@@ -338,7 +338,7 @@ func (op *NestedLoopJoinOperator) deserializeTupleData(data []byte) map[string]i
 			}
 		}
 	}
-	
+
 	return result
 }
 
@@ -378,17 +378,17 @@ func (op *HashJoinOperator) Open() error {
 		return fmt.Errorf("operator already opened")
 	}
 	op.opened = true
-	
+
 	err := op.left.Open()
 	if err != nil {
 		return err
 	}
-	
+
 	err = op.right.Open()
 	if err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -416,7 +416,7 @@ func (op *HashJoinOperator) Next() (*types.Tuple, error) {
 
 		// Get hash key from right tuple (simplified)
 		hashKey := op.getHashKey(rightTuple)
-		
+
 		// Look up in hash table
 		if leftTuples, exists := op.hashTable[hashKey]; exists {
 			for _, leftTuple := range leftTuples {
@@ -467,11 +467,11 @@ func (op *HashJoinOperator) Close() error {
 func (op *HashJoinOperator) GetSchema() types.Schema {
 	leftSchema := op.left.GetSchema()
 	rightSchema := op.right.GetSchema()
-	
+
 	joinedSchema := types.Schema{
 		Columns: append(leftSchema.Columns, rightSchema.Columns...),
 	}
-	
+
 	return joinedSchema
 }
 
@@ -504,7 +504,7 @@ func (jp *JoinPredicate) Evaluate(leftTuple, rightTuple *types.Tuple) bool {
 	// Extract values from both tuples
 	leftValue := jp.extractColumnValue(leftTuple, jp.LeftColumn, jp.LeftSchema)
 	rightValue := jp.extractColumnValue(rightTuple, jp.RightColumn, jp.RightSchema)
-	
+
 	// Compare values based on operator
 	return jp.compareValues(leftValue, rightValue, jp.Operator)
 }
@@ -513,7 +513,7 @@ func (jp *JoinPredicate) Evaluate(leftTuple, rightTuple *types.Tuple) bool {
 func (jp *JoinPredicate) extractColumnValue(tuple *types.Tuple, columnName string, schema types.Schema) interface{} {
 	// Deserialize tuple data
 	tupleData := jp.deserializeTupleData(tuple.Data)
-	
+
 	// Return the column value
 	return tupleData[columnName]
 }
@@ -522,23 +522,23 @@ func (jp *JoinPredicate) extractColumnValue(tuple *types.Tuple, columnName strin
 func (jp *JoinPredicate) deserializeTupleData(data []byte) map[string]any {
 	result := make(map[string]any)
 	dataStr := string(data)
-	
+
 	// Split by semicolon to get key-value pairs
 	pairs := strings.Split(dataStr, ";")
 	for _, pair := range pairs {
 		if len(pair) == 0 {
 			continue
 		}
-		
+
 		// Split by colon to get key and value
 		parts := strings.SplitN(pair, ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
-		
+
 		key := parts[0]
 		valueStr := parts[1]
-		
+
 		// Try to convert to appropriate type
 		if intVal, err := strconv.Atoi(valueStr); err == nil {
 			result[key] = intVal
@@ -550,20 +550,29 @@ func (jp *JoinPredicate) deserializeTupleData(data []byte) map[string]any {
 			result[key] = valueStr
 		}
 	}
-	
+
 	return result
 }
 
 // compareValues compares two values based on the operator
 func (jp *JoinPredicate) compareValues(left, right interface{}, operator string) bool {
-	if left == nil || right == nil {
-		return operator == "IS NULL" || operator == "IS NOT NULL"
+	// Handle NULL checks
+	if operator == "IS NULL" {
+		return left == nil
 	}
-	
+	if operator == "IS NOT NULL" {
+		return left != nil
+	}
+
+	// For other operators, if either value is NULL, return false
+	if left == nil || right == nil {
+		return false
+	}
+
 	// Convert to strings for comparison (simplified)
 	leftStr := fmt.Sprintf("%v", left)
 	rightStr := fmt.Sprintf("%v", right)
-	
+
 	switch operator {
 	case "=", "==":
 		return leftStr == rightStr
@@ -631,7 +640,7 @@ func (op *ProjectionOperator) Close() error {
 // GetSchema returns the projected schema
 func (op *ProjectionOperator) GetSchema() types.Schema {
 	childSchema := op.child.GetSchema()
-	
+
 	// Filter columns based on projection
 	var projectedColumns []types.Column
 	for _, colName := range op.columns {
@@ -642,7 +651,7 @@ func (op *ProjectionOperator) GetSchema() types.Schema {
 			}
 		}
 	}
-	
+
 	return types.Schema{Columns: projectedColumns}
 }
 
@@ -673,12 +682,12 @@ func (op *LeftJoinOperator) Open() error {
 		return fmt.Errorf("operator already opened")
 	}
 	op.opened = true
-	
+
 	err := op.left.Open()
 	if err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -698,7 +707,7 @@ func (op *LeftJoinOperator) Next() (*types.Tuple, error) {
 			op.leftTuple = leftTuple
 			op.foundMatch = false
 			op.rightEOF = false
-			
+
 			// Open right operator for this left tuple
 			if !op.rightOpen {
 				err = op.right.Open()
@@ -721,7 +730,7 @@ func (op *LeftJoinOperator) Next() (*types.Tuple, error) {
 				// Check join predicate
 				if op.predicate == nil || op.predicate.Evaluate(op.leftTuple, rightTuple) {
 					op.foundMatch = true
-					
+
 					// Create joined tuple
 					joinedTuple := &types.Tuple{
 						Data: append(op.leftTuple.Data, rightTuple.Data...),
@@ -738,11 +747,11 @@ func (op *LeftJoinOperator) Next() (*types.Tuple, error) {
 			// Create null tuple for right side
 			rightSchema := op.right.GetSchema()
 			nullData := op.createNullTuple(rightSchema)
-			
+
 			joinedTuple := &types.Tuple{
 				Data: append(op.leftTuple.Data, nullData...),
 			}
-			
+
 			op.leftTuple = nil // Move to next left tuple
 			return joinedTuple, nil
 		}
@@ -772,11 +781,11 @@ func (op *LeftJoinOperator) Close() error {
 func (op *LeftJoinOperator) GetSchema() types.Schema {
 	leftSchema := op.left.GetSchema()
 	rightSchema := op.right.GetSchema()
-	
+
 	joinedSchema := types.Schema{
 		Columns: append(leftSchema.Columns, rightSchema.Columns...),
 	}
-	
+
 	return joinedSchema
 }
 
@@ -807,12 +816,12 @@ func (op *RightJoinOperator) Open() error {
 		return fmt.Errorf("operator already opened")
 	}
 	op.opened = true
-	
+
 	err := op.right.Open()
 	if err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -832,7 +841,7 @@ func (op *RightJoinOperator) Next() (*types.Tuple, error) {
 			op.rightTuple = rightTuple
 			op.foundMatch = false
 			op.leftEOF = false
-			
+
 			// Open left operator for this right tuple
 			if !op.leftOpen {
 				err = op.left.Open()
@@ -855,7 +864,7 @@ func (op *RightJoinOperator) Next() (*types.Tuple, error) {
 				// Check join predicate
 				if op.predicate == nil || op.predicate.Evaluate(leftTuple, op.rightTuple) {
 					op.foundMatch = true
-					
+
 					// Create joined tuple
 					joinedTuple := &types.Tuple{
 						Data: append(leftTuple.Data, op.rightTuple.Data...),
@@ -872,11 +881,11 @@ func (op *RightJoinOperator) Next() (*types.Tuple, error) {
 			// Create null tuple for left side
 			leftSchema := op.left.GetSchema()
 			nullData := op.createNullTuple(leftSchema)
-			
+
 			joinedTuple := &types.Tuple{
 				Data: append(nullData, op.rightTuple.Data...),
 			}
-			
+
 			op.rightTuple = nil // Move to next right tuple
 			return joinedTuple, nil
 		}
@@ -906,21 +915,21 @@ func (op *RightJoinOperator) Close() error {
 func (op *RightJoinOperator) GetSchema() types.Schema {
 	leftSchema := op.left.GetSchema()
 	rightSchema := op.right.GetSchema()
-	
+
 	joinedSchema := types.Schema{
 		Columns: append(leftSchema.Columns, rightSchema.Columns...),
 	}
-	
+
 	return joinedSchema
 }
 
 // CrossJoinOperator performs cross join (cartesian product)
 type CrossJoinOperator struct {
-	left       Operator
-	right      Operator
-	leftTuple  *types.Tuple
-	rightOpen  bool
-	opened     bool
+	left      Operator
+	right     Operator
+	leftTuple *types.Tuple
+	rightOpen bool
+	opened    bool
 }
 
 // NewCrossJoinOperator creates a new cross join operator
@@ -937,12 +946,12 @@ func (op *CrossJoinOperator) Open() error {
 		return fmt.Errorf("operator already opened")
 	}
 	op.opened = true
-	
+
 	err := op.left.Open()
 	if err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -960,7 +969,7 @@ func (op *CrossJoinOperator) Next() (*types.Tuple, error) {
 				return nil, err
 			}
 			op.leftTuple = leftTuple
-			
+
 			// Open right operator for this left tuple
 			if !op.rightOpen {
 				err = op.right.Open()
@@ -1004,11 +1013,11 @@ func (op *CrossJoinOperator) Close() error {
 func (op *CrossJoinOperator) GetSchema() types.Schema {
 	leftSchema := op.left.GetSchema()
 	rightSchema := op.right.GetSchema()
-	
+
 	joinedSchema := types.Schema{
 		Columns: append(leftSchema.Columns, rightSchema.Columns...),
 	}
-	
+
 	return joinedSchema
 }
 
@@ -1057,12 +1066,12 @@ func (op *AggregateOperator) Open() error {
 		return fmt.Errorf("operator already opened")
 	}
 	op.opened = true
-	
+
 	err := op.child.Open()
 	if err != nil {
 		return err
 	}
-	
+
 	// Process all tuples and compute aggregates
 	return op.processAllTuples()
 }
@@ -1074,10 +1083,10 @@ func (op *AggregateOperator) processAllTuples() error {
 		if err != nil {
 			break // End of input
 		}
-		
+
 		// Get group key
 		groupKey := op.getGroupKey(tuple)
-		
+
 		// Initialize group state if not exists
 		if _, exists := op.groups[groupKey]; !exists {
 			op.groups[groupKey] = &AggregateState{
@@ -1086,21 +1095,21 @@ func (op *AggregateOperator) processAllTuples() error {
 				Values: make([]interface{}, 0),
 			}
 		}
-		
+
 		// Update aggregate state
 		op.updateAggregateState(tuple, op.groups[groupKey])
 	}
-	
+
 	// Compute final aggregate values
 	for groupKey, state := range op.groups {
 		op.computeFinalValues(groupKey, state)
 	}
-	
+
 	// Extract group keys for iteration
 	for key := range op.groups {
 		op.keys = append(op.keys, key)
 	}
-	
+
 	op.processed = true
 	return nil
 }
@@ -1110,10 +1119,10 @@ func (op *AggregateOperator) getGroupKey(tuple *types.Tuple) string {
 	if len(op.groupBy) == 0 {
 		return "default" // Single group for non-GROUP BY queries
 	}
-	
+
 	// Parse tuple data
 	tupleData := op.deserializeTupleData(tuple.Data)
-	
+
 	// Build group key from GROUP BY columns
 	var keyParts []string
 	for _, col := range op.groupBy {
@@ -1121,7 +1130,7 @@ func (op *AggregateOperator) getGroupKey(tuple *types.Tuple) string {
 			keyParts = append(keyParts, fmt.Sprintf("%v", val))
 		}
 	}
-	
+
 	return strings.Join(keyParts, "|")
 }
 
@@ -1129,17 +1138,17 @@ func (op *AggregateOperator) getGroupKey(tuple *types.Tuple) string {
 func (op *AggregateOperator) updateAggregateState(tuple *types.Tuple, state *AggregateState) {
 	// Parse tuple data
 	tupleData := op.deserializeTupleData(tuple.Data)
-	
+
 	// Update count
 	state.Count++
-	
+
 	// Update each aggregate function
 	for _, agg := range op.aggregates {
 		if agg.Column == "*" {
 			// COUNT(*) case
 			continue
 		}
-		
+
 		if val, exists := tupleData[agg.Column]; exists && val != nil {
 			switch agg.Type {
 			case "SUM", "AVG":
@@ -1155,7 +1164,7 @@ func (op *AggregateOperator) updateAggregateState(tuple *types.Tuple, state *Agg
 					state.Max = val
 				}
 			}
-			
+
 			// Store value for potential future use
 			state.Values = append(state.Values, val)
 		}
@@ -1189,22 +1198,22 @@ func (op *AggregateOperator) Next() (*types.Tuple, error) {
 	if !op.opened {
 		return nil, fmt.Errorf("operator not opened")
 	}
-	
+
 	if !op.processed {
 		return nil, fmt.Errorf("tuples not processed")
 	}
-	
+
 	if op.keyIndex >= len(op.keys) {
 		return nil, fmt.Errorf("no more tuples")
 	}
-	
+
 	// Get current group key
 	groupKey := op.keys[op.keyIndex]
 	op.keyIndex++
-	
+
 	// Create result tuple
 	resultData := op.createResultTuple(groupKey)
-	
+
 	return &types.Tuple{
 		Data: resultData,
 	}, nil
@@ -1213,7 +1222,7 @@ func (op *AggregateOperator) Next() (*types.Tuple, error) {
 // createResultTuple creates a result tuple for a group
 func (op *AggregateOperator) createResultTuple(groupKey string) []byte {
 	var parts []string
-	
+
 	// Add GROUP BY columns
 	if len(op.groupBy) > 0 && groupKey != "default" {
 		keyParts := strings.Split(groupKey, "|")
@@ -1223,21 +1232,21 @@ func (op *AggregateOperator) createResultTuple(groupKey string) []byte {
 			}
 		}
 	}
-	
+
 	// Add aggregate results
 	for _, agg := range op.aggregates {
 		columnName := agg.Column
 		if agg.Alias != "" {
 			columnName = agg.Alias
 		}
-		
+
 		if agg.Value != nil {
 			parts = append(parts, fmt.Sprintf("%s:%v", columnName, agg.Value))
 		} else {
 			parts = append(parts, fmt.Sprintf("%s:null", columnName))
 		}
 	}
-	
+
 	return []byte(strings.Join(parts, ";"))
 }
 
@@ -1250,7 +1259,7 @@ func (op *AggregateOperator) Close() error {
 // GetSchema returns the aggregate schema
 func (op *AggregateOperator) GetSchema() types.Schema {
 	var columns []types.Column
-	
+
 	// Add GROUP BY columns
 	childSchema := op.child.GetSchema()
 	for _, groupCol := range op.groupBy {
@@ -1261,14 +1270,14 @@ func (op *AggregateOperator) GetSchema() types.Schema {
 			}
 		}
 	}
-	
+
 	// Add aggregate function columns
 	for _, agg := range op.aggregates {
 		columnName := agg.Column
 		if agg.Alias != "" {
 			columnName = agg.Alias
 		}
-		
+
 		var dataType types.DataType
 		switch agg.Type {
 		case "COUNT":
@@ -1286,13 +1295,13 @@ func (op *AggregateOperator) GetSchema() types.Schema {
 				}
 			}
 		}
-		
+
 		columns = append(columns, types.Column{
 			Name: columnName,
 			Type: dataType,
 		})
 	}
-	
+
 	return types.Schema{Columns: columns}
 }
 
@@ -1302,23 +1311,23 @@ func (op *AggregateOperator) GetSchema() types.Schema {
 func (op *AggregateOperator) deserializeTupleData(data []byte) map[string]interface{} {
 	result := make(map[string]interface{})
 	dataStr := string(data)
-	
+
 	// Split by semicolon to get key-value pairs
 	pairs := strings.Split(dataStr, ";")
 	for _, pair := range pairs {
 		if len(pair) == 0 {
 			continue
 		}
-		
+
 		// Split by colon to get key and value
 		parts := strings.SplitN(pair, ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
-		
+
 		key := parts[0]
 		valueStr := parts[1]
-		
+
 		// Try to convert to appropriate type
 		if intVal, err := strconv.Atoi(valueStr); err == nil {
 			result[key] = intVal
@@ -1330,7 +1339,7 @@ func (op *AggregateOperator) deserializeTupleData(data []byte) map[string]interf
 			result[key] = valueStr
 		}
 	}
-	
+
 	return result
 }
 
@@ -1358,7 +1367,7 @@ func (op *AggregateOperator) compareValues(a, b interface{}) int {
 	// Convert to strings for comparison (simplified)
 	aStr := fmt.Sprintf("%v", a)
 	bStr := fmt.Sprintf("%v", b)
-	
+
 	// Try numeric comparison first
 	if aNum, aOk := op.convertToNumber(a); aOk {
 		if bNum, bOk := op.convertToNumber(b); bOk {
@@ -1370,7 +1379,7 @@ func (op *AggregateOperator) compareValues(a, b interface{}) int {
 			return 0
 		}
 	}
-	
+
 	// Fall back to string comparison
 	if aStr < bStr {
 		return -1

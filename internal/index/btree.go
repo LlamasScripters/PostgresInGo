@@ -230,6 +230,7 @@ type IndexCursor struct {
 	node     *BTreeNode
 	position int
 	btree    *BTree
+	endKey   interface{} // End key for range scan bounds
 }
 
 // RangeScan performs a range scan on the B-Tree
@@ -238,7 +239,13 @@ func (bt *BTree) RangeScan(startKey, endKey interface{}) (*IndexCursor, error) {
 	defer bt.mu.RUnlock()
 
 	if bt.root == nil {
-		return nil, fmt.Errorf("empty tree")
+		// Return cursor that will immediately fail on Next()
+		return &IndexCursor{
+			node:     nil,
+			position: 0,
+			btree:    bt,
+			endKey:   endKey,
+		}, nil
 	}
 
 	node := bt.findLeafNode(startKey)
@@ -248,6 +255,7 @@ func (bt *BTree) RangeScan(startKey, endKey interface{}) (*IndexCursor, error) {
 		node:     node,
 		position: position,
 		btree:    bt,
+		endKey:   endKey,
 	}, nil
 }
 
@@ -280,6 +288,12 @@ func (ic *IndexCursor) Next() (interface{}, types.TupleID, error) {
 	}
 
 	key := ic.node.keys[ic.position]
+
+	// Check if key is beyond end of range
+	if ic.endKey != nil && ic.btree.comparator(key, ic.endKey) > 0 {
+		return nil, types.TupleID{}, fmt.Errorf("end of cursor")
+	}
+
 	value := ic.node.values[ic.position]
 	ic.position++
 

@@ -9,16 +9,24 @@ import (
 // Parser represents the SQL parser
 type Parser struct {
 	lexer   *AdvancedLexer
-	errors  []string
 	current Token
+}
+
+type ParseError struct {
+	Line    int
+	Column  int
+	Message string
+}
+
+func (e *ParseError) String() string {
+	return fmt.Sprintf("parse error at %d:%d: %s", e.Line, e.Column, e.Message)
 }
 
 // NewParser creates a new SQL parser
 func NewParser(input string) *Parser {
 	lexer := NewAdvancedLexer(input)
 	p := &Parser{
-		lexer:  lexer,
-		errors: []string{},
+		lexer: lexer,
 	}
 	p.nextToken() // Initialize current token
 	return p
@@ -36,7 +44,10 @@ func (p *Parser) Parse() (*SQLStatement, error) {
 			continue
 		}
 
-		s := p.parseStatement()
+		s, err := p.parseStatement()
+		if err != nil {
+			return nil, err
+		}
 		if s != nil {
 			stmt.Statements = append(stmt.Statements, s)
 		}
@@ -45,10 +56,6 @@ func (p *Parser) Parse() (*SQLStatement, error) {
 		if p.current.Type == SEMICOLON {
 			p.nextToken()
 		}
-	}
-
-	if len(p.errors) > 0 {
-		return nil, fmt.Errorf("parse errors: %s", strings.Join(p.errors, "; "))
 	}
 
 	return stmt, nil
@@ -70,23 +77,17 @@ func (p *Parser) isAtEnd() bool {
 }
 
 // expectToken consumes a token of the expected type or reports an error
-func (p *Parser) expectToken(expected TokenType) bool {
+func (p *Parser) expectToken(expected TokenType) (bool, error) {
 	if p.current.Type == expected {
 		p.nextToken()
-		return true
+		return true, nil
 	}
-	p.addError(fmt.Sprintf("expected %s, got %s at line %d, column %d",
-		expected.String(), p.current.Type.String(), p.current.Line, p.current.Column))
-	return false
-}
-
-// addError adds an error to the error list
-func (p *Parser) addError(msg string) {
-	p.errors = append(p.errors, msg)
+	return false, fmt.Errorf("expected %s, got %s at line %d, column %d",
+		expected.String(), p.current.Type.String(), p.current.Line, p.current.Column)
 }
 
 // parseStatement parses a top-level SQL statement
-func (p *Parser) parseStatement() Statement {
+func (p *Parser) parseStatement() (Statement, error) {
 	switch p.current.Type {
 	case CREATE:
 		return p.parseCreateStatement()
@@ -101,16 +102,16 @@ func (p *Parser) parseStatement() Statement {
 	case DELETE:
 		return p.parseDeleteStatement()
 	default:
-		p.addError(fmt.Sprintf("unexpected token %s at line %d, column %d",
-			p.current.Type.String(), p.current.Line, p.current.Column))
+		err := fmt.Errorf("unexpected token %s at line %d, column %d",
+			p.current.Type.String(), p.current.Line, p.current.Column)
 		p.nextToken() // Skip invalid token
-		return nil
+		return nil, err
 	}
 }
 
 // ==================== CREATE Statements ====================
 
-func (p *Parser) parseCreateStatement() Statement {
+func (p *Parser) parseCreateStatement() (Statement, error) {
 	p.nextToken() // consume CREATE
 
 	switch p.current.Type {
@@ -125,43 +126,39 @@ func (p *Parser) parseCreateStatement() Statement {
 		if p.current.Type == INDEX {
 			return p.parseCreateIndex(true)
 		}
-		p.addError("expected INDEX after UNIQUE")
-		return nil
+		return nil, fmt.Errorf("expected INDEX after UNIQUE")
 	case INDEX:
 		return p.parseCreateIndex(false)
 	default:
-		p.addError(fmt.Sprintf("unexpected token after CREATE: %s", p.current.Type.String()))
-		return nil
+		return nil, fmt.Errorf("unexpected token after CREATE: %s", p.current.Type.String())
 	}
 }
 
-func (p *Parser) parseCreateDatabase() *CreateDatabaseStatement {
+func (p *Parser) parseCreateDatabase() (*CreateDatabaseStatement, error) {
 	p.nextToken() // consume DATABASE
 
 	if p.current.Type != IDENT {
-		p.addError("expected database name")
-		return nil
+		return nil, fmt.Errorf("expected database name")
 	}
 
 	name := p.current.Literal
 	p.nextToken()
 
-	return &CreateDatabaseStatement{Name: name}
+	return &CreateDatabaseStatement{Name: name}, nil
 }
 
-func (p *Parser) parseCreateTable() *CreateTableStatement {
+func (p *Parser) parseCreateTable() (*CreateTableStatement, error) {
 	p.nextToken() // consume TABLE
 
 	if p.current.Type != IDENT {
-		p.addError("expected table name")
-		return nil
+		return nil, fmt.Errorf("expected table name")
 	}
 
 	name := p.current.Literal
 	p.nextToken()
 
-	if !p.expectToken(LPAREN) {
-		return nil
+	if ok, err := p.expectToken(LPAREN); !ok {
+		return nil, err
 	}
 
 	var columns []*ColumnDefinition
@@ -170,12 +167,18 @@ func (p *Parser) parseCreateTable() *CreateTableStatement {
 	for p.current.Type != RPAREN && !p.isAtEnd() {
 		if p.current.Type == CONSTRAINT || p.current.Type == PRIMARY ||
 			p.current.Type == FOREIGN || p.current.Type == UNIQUE || p.current.Type == CHECK {
-			constraint := p.parseConstraintDefinition()
+			constraint, err := p.parseConstraintDefinition()
+			if err != nil {
+				return nil, err
+			}
 			if constraint != nil {
 				constraints = append(constraints, constraint)
 			}
 		} else {
-			column := p.parseColumnDefinition()
+			column, err := p.parseColumnDefinition()
+			if err != nil {
+				return nil, err
+			}
 			if column != nil {
 				columns = append(columns, column)
 			}
@@ -184,54 +187,50 @@ func (p *Parser) parseCreateTable() *CreateTableStatement {
 		if p.current.Type == COMMA {
 			p.nextToken()
 		} else if p.current.Type != RPAREN {
-			p.addError("expected ',' or ')' in table definition")
-			break
+			return nil, fmt.Errorf("expected ',' or ')' in table definition")
 		}
 	}
 
-	if !p.expectToken(RPAREN) {
-		return nil
+	if ok, err := p.expectToken(RPAREN); !ok {
+		return nil, err
 	}
 
 	return &CreateTableStatement{
 		Name:        name,
 		Columns:     columns,
 		Constraints: constraints,
-	}
+	}, nil
 }
 
-func (p *Parser) parseCreateIndex(unique bool) *CreateIndexStatement {
+func (p *Parser) parseCreateIndex(unique bool) (*CreateIndexStatement, error) {
 	p.nextToken() // consume INDEX
 
 	if p.current.Type != IDENT {
-		p.addError("expected index name")
-		return nil
+		return nil, fmt.Errorf("expected index name")
 	}
 
 	name := p.current.Literal
 	p.nextToken()
 
-	if !p.expectToken(ON) {
-		return nil
+	if ok, err := p.expectToken(ON); !ok {
+		return nil, err
 	}
 
 	if p.current.Type != IDENT {
-		p.addError("expected table name")
-		return nil
+		return nil, fmt.Errorf("expected table name")
 	}
 
 	table := p.current.Literal
 	p.nextToken()
 
-	if !p.expectToken(LPAREN) {
-		return nil
+	if ok, err := p.expectToken(LPAREN); !ok {
+		return nil, err
 	}
 
 	var columns []string
 	for p.current.Type != RPAREN && !p.isAtEnd() {
 		if p.current.Type != IDENT {
-			p.addError("expected column name")
-			break
+			return nil, fmt.Errorf("expected column name")
 		}
 
 		columns = append(columns, p.current.Literal)
@@ -240,13 +239,12 @@ func (p *Parser) parseCreateIndex(unique bool) *CreateIndexStatement {
 		if p.current.Type == COMMA {
 			p.nextToken()
 		} else if p.current.Type != RPAREN {
-			p.addError("expected ',' or ')' in index column list")
-			break
+			return nil, fmt.Errorf("expected ',' or ')' in index column list")
 		}
 	}
 
-	if !p.expectToken(RPAREN) {
-		return nil
+	if ok, err := p.expectToken(RPAREN); !ok {
+		return nil, err
 	}
 
 	return &CreateIndexStatement{
@@ -254,15 +252,14 @@ func (p *Parser) parseCreateIndex(unique bool) *CreateIndexStatement {
 		Table:   table,
 		Columns: columns,
 		Unique:  unique,
-	}
+	}, nil
 }
 
-func (p *Parser) parseCreateView() *CreateViewStatement {
+func (p *Parser) parseCreateView() (*CreateViewStatement, error) {
 	p.nextToken() // consume VIEW
 
 	if p.current.Type != IDENT {
-		p.addError("expected view name")
-		return nil
+		return nil, fmt.Errorf("expected view name")
 	}
 
 	viewName := p.current.Literal
@@ -276,8 +273,7 @@ func (p *Parser) parseCreateView() *CreateViewStatement {
 
 		for {
 			if p.current.Type != IDENT {
-				p.addError("expected column name")
-				return nil
+				return nil, fmt.Errorf("expected column name")
 			}
 
 			columns = append(columns, p.current.Literal)
@@ -291,28 +287,25 @@ func (p *Parser) parseCreateView() *CreateViewStatement {
 			if p.current.Type == COMMA {
 				p.nextToken() // consume ,
 			} else {
-				p.addError("expected ',' or ')' in column list")
-				return nil
+				return nil, fmt.Errorf("expected ',' or ')' in column list")
 			}
 		}
 	}
 
 	// Expect AS keyword
 	if p.current.Type != AS {
-		p.addError("expected AS after view name")
-		return nil
+		return nil, fmt.Errorf("expected AS after view name")
 	}
 	p.nextToken() // consume AS
 
 	// Parse the SELECT statement
 	if p.current.Type != SELECT {
-		p.addError("expected SELECT statement after AS")
-		return nil
+		return nil, fmt.Errorf("expected SELECT statement after AS")
 	}
 
-	selectStmt := p.parseSelectStatement()
-	if selectStmt == nil {
-		return nil
+	selectStmt, err := p.parseSelectStatement()
+	if err != nil {
+		return nil, err
 	}
 
 	// Extract the raw SQL definition
@@ -323,12 +316,12 @@ func (p *Parser) parseCreateView() *CreateViewStatement {
 		Columns:    columns,
 		Query:      selectStmt,
 		Definition: definition,
-	}
+	}, nil
 }
 
 // ==================== DROP Statements ====================
 
-func (p *Parser) parseDropStatement() Statement {
+func (p *Parser) parseDropStatement() (Statement, error) {
 	p.nextToken() // consume DROP
 
 	switch p.current.Type {
@@ -341,70 +334,65 @@ func (p *Parser) parseDropStatement() Statement {
 	case VIEW:
 		return p.parseDropView()
 	default:
-		p.addError(fmt.Sprintf("unexpected token after DROP: %s", p.current.Type.String()))
-		return nil
+		return nil, fmt.Errorf("unexpected token after DROP: %s", p.current.Type.String())
 	}
 }
 
-func (p *Parser) parseDropDatabase() *DropDatabaseStatement {
+func (p *Parser) parseDropDatabase() (*DropDatabaseStatement, error) {
 	p.nextToken() // consume DATABASE
 
 	if p.current.Type != IDENT {
-		p.addError("expected database name")
-		return nil
+		return nil, fmt.Errorf("expected database name")
 	}
 
 	name := p.current.Literal
 	p.nextToken()
 
-	return &DropDatabaseStatement{Name: name}
+	return &DropDatabaseStatement{Name: name}, nil
 }
 
-func (p *Parser) parseDropTable() *DropTableStatement {
+func (p *Parser) parseDropTable() (*DropTableStatement, error) {
 	p.nextToken() // consume TABLE
 
 	if p.current.Type != IDENT {
-		p.addError("expected table name")
-		return nil
+		return nil, fmt.Errorf("expected table name")
 	}
 
 	name := p.current.Literal
 	p.nextToken()
 
-	return &DropTableStatement{Name: name}
+	return &DropTableStatement{Name: name}, nil
 }
 
-func (p *Parser) parseDropIndex() *DropIndexStatement {
+func (p *Parser) parseDropIndex() (*DropIndexStatement, error) {
 	p.nextToken() // consume INDEX
 
 	if p.current.Type != IDENT {
-		p.addError("expected index name")
-		return nil
+		return nil, fmt.Errorf("expected index name")
 	}
 
 	name := p.current.Literal
 	p.nextToken()
 
-	return &DropIndexStatement{Name: name}
+	return &DropIndexStatement{Name: name}, nil
 }
 
-func (p *Parser) parseDropView() *DropViewStatement {
+func (p *Parser) parseDropView() (*DropViewStatement, error) {
 	p.nextToken() // consume VIEW
 
 	if p.current.Type != IDENT {
-		p.addError("expected view name")
-		return nil
+		return nil, fmt.Errorf("expected view name")
 	}
 
 	name := p.current.Literal
 	p.nextToken()
 
-	return &DropViewStatement{Name: name}
+	return &DropViewStatement{Name: name}, nil
 }
 
 // ==================== DML Statements ====================
 
-func (p *Parser) parseSelectStatement() *SelectStatement {
+func (p *Parser) parseSelectStatement() (*SelectStatement, error) {
 	p.nextToken() // consume SELECT
 
 	stmt := &SelectStatement{}
@@ -416,16 +404,27 @@ func (p *Parser) parseSelectStatement() *SelectStatement {
 	}
 
 	// Parse column list
-	stmt.Columns = p.parseSelectList()
+	columns, err := p.parseSelectList()
+	if err != nil {
+		return nil, err
+	}
+	stmt.Columns = columns
 
 	// Parse FROM clause
 	if p.current.Type == FROM {
-		stmt.From = p.parseFromClause()
+		from, err := p.parseFromClause()
+		if err != nil {
+			return nil, err
+		}
+		stmt.From = from
 	}
 
 	// Parse JOINs
 	for p.isJoinKeyword(p.current.Type) {
-		join := p.parseJoinClause()
+		join, err := p.parseJoinClause()
+		if err != nil {
+			return nil, err
+		}
 		if join != nil {
 			stmt.Joins = append(stmt.Joins, join)
 		}
@@ -434,56 +433,81 @@ func (p *Parser) parseSelectStatement() *SelectStatement {
 	// Parse WHERE clause
 	if p.current.Type == WHERE {
 		p.nextToken()
-		stmt.Where = p.parseExpression()
+		where, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Where = where
 	}
 
 	// Parse GROUP BY clause
 	if p.current.Type == GROUP {
 		p.nextToken()
-		if p.expectToken(BY) {
-			stmt.GroupBy = p.parseExpressionList()
+		if ok, err := p.expectToken(BY); !ok {
+			return nil, err
 		}
+		groupBy, err := p.parseExpressionList()
+		if err != nil {
+			return nil, err
+		}
+		stmt.GroupBy = groupBy
 	}
 
 	// Parse HAVING clause
 	if p.current.Type == HAVING {
 		p.nextToken()
-		stmt.Having = p.parseExpression()
+		having, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Having = having
 	}
 
 	// Parse ORDER BY clause
 	if p.current.Type == ORDER {
 		p.nextToken()
-		if p.expectToken(BY) {
-			stmt.OrderBy = p.parseOrderByClause()
+		if ok, err := p.expectToken(BY); !ok {
+			return nil, err
 		}
+		orderBy, err := p.parseOrderByClause()
+		if err != nil {
+			return nil, err
+		}
+		stmt.OrderBy = orderBy
 	}
 
 	// Parse LIMIT clause
 	if p.current.Type == LIMIT {
 		p.nextToken()
-		stmt.Limit = p.parseExpression()
+		limit, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Limit = limit
 	}
 
 	// Parse OFFSET clause
 	if p.current.Type == OFFSET {
 		p.nextToken()
-		stmt.Offset = p.parseExpression()
+		offset, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Offset = offset
 	}
 
-	return stmt
+	return stmt, nil
 }
 
-func (p *Parser) parseInsertStatement() *InsertStatement {
+func (p *Parser) parseInsertStatement() (*InsertStatement, error) {
 	p.nextToken() // consume INSERT
 
-	if !p.expectToken(INTO) {
-		return nil
+	if ok, err := p.expectToken(INTO); !ok {
+		return nil, err
 	}
 
 	if p.current.Type != IDENT {
-		p.addError("expected table name")
-		return nil
+		return nil, fmt.Errorf("expected table name")
 	}
 
 	stmt := &InsertStatement{
@@ -497,8 +521,7 @@ func (p *Parser) parseInsertStatement() *InsertStatement {
 
 		for p.current.Type != RPAREN && !p.isAtEnd() {
 			if p.current.Type != IDENT {
-				p.addError("expected column name")
-				break
+				return nil, fmt.Errorf("expected column name")
 			}
 
 			stmt.Columns = append(stmt.Columns, p.current.Literal)
@@ -507,29 +530,31 @@ func (p *Parser) parseInsertStatement() *InsertStatement {
 			if p.current.Type == COMMA {
 				p.nextToken()
 			} else if p.current.Type != RPAREN {
-				p.addError("expected ',' or ')' in column list")
-				break
+				return nil, fmt.Errorf("expected ',' or ')' in column list")
 			}
 		}
 
-		if !p.expectToken(RPAREN) {
-			return nil
+		if ok, err := p.expectToken(RPAREN); !ok {
+			return nil, err
 		}
 	}
 
-	if !p.expectToken(VALUES) {
-		return nil
+	if ok, err := p.expectToken(VALUES); !ok {
+		return nil, err
 	}
 
 	// Parse value lists
 	for {
-		if !p.expectToken(LPAREN) {
-			return nil
+		if ok, err := p.expectToken(LPAREN); !ok {
+			return nil, err
 		}
 
 		var values []Expression
 		for p.current.Type != RPAREN && !p.isAtEnd() {
-			expr := p.parseExpression()
+			expr, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
 			if expr != nil {
 				values = append(values, expr)
 			}
@@ -537,13 +562,12 @@ func (p *Parser) parseInsertStatement() *InsertStatement {
 			if p.current.Type == COMMA {
 				p.nextToken()
 			} else if p.current.Type != RPAREN {
-				p.addError("expected ',' or ')' in value list")
-				break
+				return nil, fmt.Errorf("expected ',' or ')' in value list")
 			}
 		}
 
-		if !p.expectToken(RPAREN) {
-			return nil
+		if ok, err := p.expectToken(RPAREN); !ok {
+			return nil, err
 		}
 
 		stmt.Values = append(stmt.Values, values)
@@ -555,15 +579,14 @@ func (p *Parser) parseInsertStatement() *InsertStatement {
 		}
 	}
 
-	return stmt
+	return stmt, nil
 }
 
-func (p *Parser) parseUpdateStatement() *UpdateStatement {
+func (p *Parser) parseUpdateStatement() (*UpdateStatement, error) {
 	p.nextToken() // consume UPDATE
 
 	if p.current.Type != IDENT {
-		p.addError("expected table name")
-		return nil
+		return nil, fmt.Errorf("expected table name")
 	}
 
 	stmt := &UpdateStatement{
@@ -571,27 +594,26 @@ func (p *Parser) parseUpdateStatement() *UpdateStatement {
 	}
 	p.nextToken()
 
-	if !p.expectToken(SET) {
-		return nil
+	if ok, err := p.expectToken(SET); !ok {
+		return nil, err
 	}
 
 	// Parse assignments
 	for {
 		if p.current.Type != IDENT {
-			p.addError("expected column name")
-			break
+			return nil, fmt.Errorf("expected column name")
 		}
 
 		column := p.current.Literal
 		p.nextToken()
 
-		if !p.expectToken(ASSIGN) {
-			break
+		if ok, err := p.expectToken(ASSIGN); !ok {
+			return nil, err
 		}
 
-		value := p.parseExpression()
-		if value == nil {
-			break
+		value, err := p.parseExpression()
+		if err != nil {
+			return nil, err
 		}
 
 		stmt.Assignments = append(stmt.Assignments, &AssignmentExpression{
@@ -609,22 +631,25 @@ func (p *Parser) parseUpdateStatement() *UpdateStatement {
 	// Parse WHERE clause
 	if p.current.Type == WHERE {
 		p.nextToken()
-		stmt.Where = p.parseExpression()
+		where, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Where = where
 	}
 
-	return stmt
+	return stmt, nil
 }
 
-func (p *Parser) parseDeleteStatement() *DeleteStatement {
+func (p *Parser) parseDeleteStatement() (*DeleteStatement, error) {
 	p.nextToken() // consume DELETE
 
-	if !p.expectToken(FROM) {
-		return nil
+	if ok, err := p.expectToken(FROM); !ok {
+		return nil, err
 	}
 
 	if p.current.Type != IDENT {
-		p.addError("expected table name")
-		return nil
+		return nil, fmt.Errorf("expected table name")
 	}
 
 	stmt := &DeleteStatement{
@@ -635,18 +660,21 @@ func (p *Parser) parseDeleteStatement() *DeleteStatement {
 	// Parse WHERE clause
 	if p.current.Type == WHERE {
 		p.nextToken()
-		stmt.Where = p.parseExpression()
+		where, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Where = where
 	}
 
-	return stmt
+	return stmt, nil
 }
 
 // ==================== Column and Constraint Parsing ====================
 
-func (p *Parser) parseColumnDefinition() *ColumnDefinition {
+func (p *Parser) parseColumnDefinition() (*ColumnDefinition, error) {
 	if p.current.Type != IDENT {
-		p.addError("expected column name")
-		return nil
+		return nil, fmt.Errorf("expected column name")
 	}
 
 	column := &ColumnDefinition{
@@ -655,16 +683,22 @@ func (p *Parser) parseColumnDefinition() *ColumnDefinition {
 	p.nextToken()
 
 	// Parse data type
-	column.DataType = p.parseDataType()
+	dataType, err := p.parseDataType()
+	if err != nil {
+		return nil, err
+	}
+	column.DataType = dataType
 
 	// Parse column constraints
 	for {
 		switch p.current.Type {
 		case NOT:
 			p.nextToken()
-			if p.expectToken(NULL) {
+			if ok, err := p.expectToken(NULL); ok {
 				nullable := false
 				column.Nullable = &nullable
+			} else if err != nil {
+				return nil, err
 			}
 		case NULL:
 			p.nextToken()
@@ -672,28 +706,33 @@ func (p *Parser) parseColumnDefinition() *ColumnDefinition {
 			column.Nullable = &nullable
 		case DEFAULT:
 			p.nextToken()
-			column.Default = p.parseExpression()
+			defaultExpr, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			column.Default = defaultExpr
 		case AUTO_INCREMENT:
 			p.nextToken()
 			column.AutoIncrement = true
 		case PRIMARY:
 			p.nextToken()
-			if p.expectToken(KEY) {
+			if ok, err := p.expectToken(KEY); ok {
 				column.PrimaryKey = true
+			} else if err != nil {
+				return nil, err
 			}
 		case UNIQUE:
 			p.nextToken()
 			column.Unique = true
 		default:
-			return column
+			return column, nil
 		}
 	}
 }
 
-func (p *Parser) parseDataType() DataTypeDefinition {
+func (p *Parser) parseDataType() (DataTypeDefinition, error) {
 	if !IsDataType(p.current.Type) {
-		p.addError(fmt.Sprintf("expected data type, got %s", p.current.Type.String()))
-		return DataTypeDefinition{}
+		return DataTypeDefinition{}, fmt.Errorf("expected data type, got %s", p.current.Type.String())
 	}
 
 	dataType := DataTypeDefinition{
@@ -725,15 +764,15 @@ func (p *Parser) parseDataType() DataTypeDefinition {
 			}
 		}
 
-		if !p.expectToken(RPAREN) {
-			return dataType
+		if ok, err := p.expectToken(RPAREN); !ok {
+			return dataType, err
 		}
 	}
 
-	return dataType
+	return dataType, nil
 }
 
-func (p *Parser) parseConstraintDefinition() *ConstraintDefinition {
+func (p *Parser) parseConstraintDefinition() (*ConstraintDefinition, error) {
 	constraint := &ConstraintDefinition{}
 
 	// Optional constraint name
@@ -748,66 +787,119 @@ func (p *Parser) parseConstraintDefinition() *ConstraintDefinition {
 	switch p.current.Type {
 	case PRIMARY:
 		p.nextToken()
-		if p.expectToken(KEY) {
+		if ok, err := p.expectToken(KEY); ok {
 			constraint.Type = "PRIMARY KEY"
-			if p.expectToken(LPAREN) {
-				constraint.Columns = p.parseColumnList()
-				p.expectToken(RPAREN)
+			if ok, err := p.expectToken(LPAREN); ok {
+				cols, err := p.parseColumnList()
+				if err != nil {
+					return nil, err
+				}
+				constraint.Columns = cols
+				if ok, err := p.expectToken(RPAREN); !ok && err != nil {
+					return nil, err
+				}
+			} else if err != nil {
+				return nil, err
 			}
+		} else if err != nil {
+			return nil, err
 		}
 	case FOREIGN:
 		p.nextToken()
-		if p.expectToken(KEY) {
+		if ok, err := p.expectToken(KEY); ok {
 			constraint.Type = "FOREIGN KEY"
-			if p.expectToken(LPAREN) {
-				constraint.Columns = p.parseColumnList()
-				if p.expectToken(RPAREN) && p.expectToken(REFERENCES) {
-					if p.current.Type == IDENT {
-						constraint.RefTable = p.current.Literal
-						p.nextToken()
-						if p.expectToken(LPAREN) {
-							constraint.RefColumns = p.parseColumnList()
-							p.expectToken(RPAREN)
-						}
-					}
+			if ok, err := p.expectToken(LPAREN); ok {
+				cols, err := p.parseColumnList()
+				if err != nil {
+					return nil, err
 				}
+				constraint.Columns = cols
+				if ok, err := p.expectToken(RPAREN); ok {
+					if ok, err := p.expectToken(REFERENCES); ok {
+						if p.current.Type == IDENT {
+							constraint.RefTable = p.current.Literal
+							p.nextToken()
+							if ok, err := p.expectToken(LPAREN); ok {
+								refCols, err := p.parseColumnList()
+								if err != nil {
+									return nil, err
+								}
+								constraint.RefColumns = refCols
+								if ok, err := p.expectToken(RPAREN); !ok && err != nil {
+									return nil, err
+								}
+							} else if err != nil {
+								return nil, err
+							}
+						}
+					} else if err != nil {
+						return nil, err
+					}
+				} else if err != nil {
+					return nil, err
+				}
+			} else if err != nil {
+				return nil, err
 			}
+		} else if err != nil {
+			return nil, err
 		}
 	case UNIQUE:
 		p.nextToken()
 		constraint.Type = "UNIQUE"
-		if p.expectToken(LPAREN) {
-			constraint.Columns = p.parseColumnList()
-			p.expectToken(RPAREN)
+		if ok, err := p.expectToken(LPAREN); ok {
+			cols, err := p.parseColumnList()
+			if err != nil {
+				return nil, err
+			}
+			constraint.Columns = cols
+			if ok, err := p.expectToken(RPAREN); !ok && err != nil {
+				return nil, err
+			}
+		} else if err != nil {
+			return nil, err
 		}
 	case CHECK:
 		p.nextToken()
 		constraint.Type = "CHECK"
-		if p.expectToken(LPAREN) {
-			constraint.CheckExpr = p.parseExpression()
-			p.expectToken(RPAREN)
+		if ok, err := p.expectToken(LPAREN); ok {
+			checkExpr, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			constraint.CheckExpr = checkExpr
+			if ok, err := p.expectToken(RPAREN); !ok && err != nil {
+				return nil, err
+			}
+		} else if err != nil {
+			return nil, err
 		}
 	default:
-		p.addError(fmt.Sprintf("unexpected constraint type: %s", p.current.Type.String()))
-		return nil
+		return nil, fmt.Errorf("unexpected constraint type: %s", p.current.Type.String())
 	}
 
-	return constraint
+	return constraint, nil
 }
 
 // ==================== Expression Parsing ====================
 
-func (p *Parser) parseExpression() Expression {
+func (p *Parser) parseExpression() (Expression, error) {
 	return p.parseOrExpression()
 }
 
-func (p *Parser) parseOrExpression() Expression {
-	expr := p.parseAndExpression()
+func (p *Parser) parseOrExpression() (Expression, error) {
+	expr, err := p.parseAndExpression()
+	if err != nil {
+		return nil, err
+	}
 
 	for p.current.Type == OR {
 		operator := p.current.Literal
 		p.nextToken()
-		right := p.parseAndExpression()
+		right, err := p.parseAndExpression()
+		if err != nil {
+			return nil, err
+		}
 		expr = &BinaryExpression{
 			Left:     expr,
 			Operator: operator,
@@ -815,16 +907,22 @@ func (p *Parser) parseOrExpression() Expression {
 		}
 	}
 
-	return expr
+	return expr, nil
 }
 
-func (p *Parser) parseAndExpression() Expression {
-	expr := p.parseEqualityExpression()
+func (p *Parser) parseAndExpression() (Expression, error) {
+	expr, err := p.parseEqualityExpression()
+	if err != nil {
+		return nil, err
+	}
 
 	for p.current.Type == AND {
 		operator := p.current.Literal
 		p.nextToken()
-		right := p.parseEqualityExpression()
+		right, err := p.parseEqualityExpression()
+		if err != nil {
+			return nil, err
+		}
 		expr = &BinaryExpression{
 			Left:     expr,
 			Operator: operator,
@@ -832,16 +930,22 @@ func (p *Parser) parseAndExpression() Expression {
 		}
 	}
 
-	return expr
+	return expr, nil
 }
 
-func (p *Parser) parseEqualityExpression() Expression {
-	expr := p.parseComparisonExpression()
+func (p *Parser) parseEqualityExpression() (Expression, error) {
+	expr, err := p.parseComparisonExpression()
+	if err != nil {
+		return nil, err
+	}
 
 	for p.current.Type == EQ || p.current.Type == ASSIGN || p.current.Type == NOT_EQ {
 		operator := p.current.Literal
 		p.nextToken()
-		right := p.parseComparisonExpression()
+		right, err := p.parseComparisonExpression()
+		if err != nil {
+			return nil, err
+		}
 		expr = &BinaryExpression{
 			Left:     expr,
 			Operator: operator,
@@ -849,16 +953,22 @@ func (p *Parser) parseEqualityExpression() Expression {
 		}
 	}
 
-	return expr
+	return expr, nil
 }
 
-func (p *Parser) parseComparisonExpression() Expression {
-	expr := p.parseAdditiveExpression()
+func (p *Parser) parseComparisonExpression() (Expression, error) {
+	expr, err := p.parseAdditiveExpression()
+	if err != nil {
+		return nil, err
+	}
 
 	for IsComparisonOperator(p.current.Type) {
 		operator := p.current.Literal
 		p.nextToken()
-		right := p.parseAdditiveExpression()
+		right, err := p.parseAdditiveExpression()
+		if err != nil {
+			return nil, err
+		}
 		expr = &BinaryExpression{
 			Left:     expr,
 			Operator: operator,
@@ -866,16 +976,22 @@ func (p *Parser) parseComparisonExpression() Expression {
 		}
 	}
 
-	return expr
+	return expr, nil
 }
 
-func (p *Parser) parseAdditiveExpression() Expression {
-	expr := p.parseMultiplicativeExpression()
+func (p *Parser) parseAdditiveExpression() (Expression, error) {
+	expr, err := p.parseMultiplicativeExpression()
+	if err != nil {
+		return nil, err
+	}
 
 	for p.current.Type == PLUS || p.current.Type == MINUS {
 		operator := p.current.Literal
 		p.nextToken()
-		right := p.parseMultiplicativeExpression()
+		right, err := p.parseMultiplicativeExpression()
+		if err != nil {
+			return nil, err
+		}
 		expr = &BinaryExpression{
 			Left:     expr,
 			Operator: operator,
@@ -883,16 +999,22 @@ func (p *Parser) parseAdditiveExpression() Expression {
 		}
 	}
 
-	return expr
+	return expr, nil
 }
 
-func (p *Parser) parseMultiplicativeExpression() Expression {
-	expr := p.parseUnaryExpression()
+func (p *Parser) parseMultiplicativeExpression() (Expression, error) {
+	expr, err := p.parseUnaryExpression()
+	if err != nil {
+		return nil, err
+	}
 
 	for p.current.Type == MULTIPLY || p.current.Type == DIVIDE || p.current.Type == MODULO {
 		operator := p.current.Literal
 		p.nextToken()
-		right := p.parseUnaryExpression()
+		right, err := p.parseUnaryExpression()
+		if err != nil {
+			return nil, err
+		}
 		expr = &BinaryExpression{
 			Left:     expr,
 			Operator: operator,
@@ -900,24 +1022,27 @@ func (p *Parser) parseMultiplicativeExpression() Expression {
 		}
 	}
 
-	return expr
+	return expr, nil
 }
 
-func (p *Parser) parseUnaryExpression() Expression {
+func (p *Parser) parseUnaryExpression() (Expression, error) {
 	if p.current.Type == NOT || p.current.Type == MINUS {
 		operator := p.current.Literal
 		p.nextToken()
-		operand := p.parseUnaryExpression()
+		operand, err := p.parseUnaryExpression()
+		if err != nil {
+			return nil, err
+		}
 		return &UnaryExpression{
 			Operator: operator,
 			Operand:  operand,
-		}
+		}, nil
 	}
 
 	return p.parsePrimaryExpression()
 }
 
-func (p *Parser) parsePrimaryExpression() Expression {
+func (p *Parser) parsePrimaryExpression() (Expression, error) {
 	switch p.current.Type {
 	case IDENT, COUNT, SUM, AVG, MIN, MAX:
 		// Could be identifier or function call
@@ -930,26 +1055,30 @@ func (p *Parser) parsePrimaryExpression() Expression {
 
 			var args []Expression
 			distinct := false
-			
+
 			// Check for DISTINCT keyword in aggregate functions
 			if p.current.Type == DISTINCT {
 				distinct = true
 				p.nextToken()
 			}
-			
+
 			if p.current.Type != RPAREN {
-				args = p.parseExpressionList()
+				argList, err := p.parseExpressionList()
+				if err != nil {
+					return nil, err
+				}
+				args = argList
 			}
 
-			if !p.expectToken(RPAREN) {
-				return nil
+			if ok, err := p.expectToken(RPAREN); !ok {
+				return nil, err
 			}
 
 			return &FunctionCall{
 				Name:      name,
 				Arguments: args,
 				Distinct:  distinct,
-			}
+			}, nil
 		}
 
 		// Check for qualified identifier (table.column)
@@ -961,72 +1090,75 @@ func (p *Parser) parsePrimaryExpression() Expression {
 				return &QualifiedIdentifier{
 					Table:  name,
 					Column: column,
-				}
+				}, nil
 			} else {
-				p.addError("expected column name after '.'")
-				return nil
+				return nil, fmt.Errorf("expected column name after DOT")
 			}
 		}
 
-		return &Identifier{Value: name}
+		return &Identifier{Value: name}, nil
 
 	case INT:
 		value, err := strconv.Atoi(p.current.Literal)
 		if err != nil {
-			p.addError(fmt.Sprintf("invalid integer: %s", p.current.Literal))
-			return nil
+			return nil, err
 		}
 		p.nextToken()
-		return &Literal{Value: value}
+		return &Literal{Value: value}, nil
 
 	case FLOAT:
 		value, err := strconv.ParseFloat(p.current.Literal, 64)
 		if err != nil {
-			p.addError(fmt.Sprintf("invalid float: %s", p.current.Literal))
-			return nil
+			return nil, err
 		}
 		p.nextToken()
-		return &Literal{Value: value}
+		return &Literal{Value: value}, nil
 
 	case STRING:
 		value := p.current.Literal
 		p.nextToken()
-		return &Literal{Value: value}
+		return &Literal{Value: value}, nil
 
 	case BOOLEAN:
 		value := strings.ToUpper(p.current.Literal) == "TRUE"
 		p.nextToken()
-		return &Literal{Value: value}
+		return &Literal{Value: value}, nil
 
 	case NULL:
 		p.nextToken()
-		return &Literal{Value: nil}
+		return &Literal{Value: nil}, nil
 
 	case ASTERISK:
 		p.nextToken()
-		return &Identifier{Value: "*"}
+		return &Identifier{Value: "*"}, nil
 
 	case LPAREN:
 		p.nextToken()
-		expr := p.parseExpression()
-		if !p.expectToken(RPAREN) {
-			return nil
+		expr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
 		}
-		return expr
+		if ok, err := p.expectToken(RPAREN); !ok {
+			return nil, err
+		}
+		return expr, nil
 
 	default:
-		p.addError(fmt.Sprintf("unexpected token in expression: %s", p.current.Type.String()))
-		return nil
+		return nil, fmt.Errorf("unexpected token %s at line %d, column %d",
+			p.current.Type.String(), p.current.Line, p.current.Column)
 	}
 }
 
 // ==================== Helper Functions ====================
 
-func (p *Parser) parseSelectList() []Expression {
+func (p *Parser) parseSelectList() ([]Expression, error) {
 	var columns []Expression
 
 	for {
-		expr := p.parseExpression()
+		expr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
 		if expr == nil {
 			break
 		}
@@ -1034,10 +1166,16 @@ func (p *Parser) parseSelectList() []Expression {
 		// Check for alias
 		if p.current.Type == AS {
 			p.nextToken()
-			if p.current.Type == IDENT {
-				// For now, we'll just use the expression as-is
-				// In a full implementation, you'd create an AliasExpression
+			if p.current.Type == IDENT || p.current.Type == STRING {
+				alias := p.current.Literal
+				if p.current.Type == STRING {
+					// Remove surrounding quotes if present
+					if len(alias) > 1 && (alias[0] == '"' && alias[len(alias)-1] == '"') {
+						alias = alias[1 : len(alias)-1]
+					}
+				}
 				p.nextToken()
+				expr = &AliasExpression{Expr: expr, Alias: alias}
 			}
 		}
 
@@ -1050,15 +1188,14 @@ func (p *Parser) parseSelectList() []Expression {
 		}
 	}
 
-	return columns
+	return columns, nil
 }
 
-func (p *Parser) parseFromClause() *FromClause {
+func (p *Parser) parseFromClause() (*FromClause, error) {
 	p.nextToken() // consume FROM
 
 	if p.current.Type != IDENT {
-		p.addError("expected table name after FROM")
-		return nil
+		return nil, fmt.Errorf("expected table name or alias after FROM")
 	}
 
 	fromClause := &FromClause{
@@ -1079,10 +1216,10 @@ func (p *Parser) parseFromClause() *FromClause {
 		p.nextToken()
 	}
 
-	return fromClause
+	return fromClause, nil
 }
 
-func (p *Parser) parseJoinClause() *JoinClause {
+func (p *Parser) parseJoinClause() (*JoinClause, error) {
 	joinType := ""
 
 	// Parse join type
@@ -1112,13 +1249,15 @@ func (p *Parser) parseJoinClause() *JoinClause {
 		}
 	}
 
-	if !p.expectToken(JOIN) {
-		return nil
+	if ok, err := p.expectToken(JOIN); !ok {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("expected JOIN after join type")
 	}
 
 	if p.current.Type != IDENT {
-		p.addError("expected table name after JOIN")
-		return nil
+		return nil, fmt.Errorf("expected table name or alias after JOIN")
 	}
 
 	joinClause := &JoinClause{
@@ -1143,17 +1282,24 @@ func (p *Parser) parseJoinClause() *JoinClause {
 	// Parse join condition
 	if p.current.Type == ON {
 		p.nextToken()
-		joinClause.Condition = p.parseExpression()
+		condition, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		joinClause.Condition = condition
 	}
 
-	return joinClause
+	return joinClause, nil
 }
 
-func (p *Parser) parseOrderByClause() []*OrderByClause {
+func (p *Parser) parseOrderByClause() ([]*OrderByClause, error) {
 	var orderBy []*OrderByClause
 
 	for {
-		expr := p.parseExpression()
+		expr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
 		if expr == nil {
 			break
 		}
@@ -1180,14 +1326,17 @@ func (p *Parser) parseOrderByClause() []*OrderByClause {
 		}
 	}
 
-	return orderBy
+	return orderBy, nil
 }
 
-func (p *Parser) parseExpressionList() []Expression {
+func (p *Parser) parseExpressionList() ([]Expression, error) {
 	var expressions []Expression
 
 	for {
-		expr := p.parseExpression()
+		expr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
 		if expr == nil {
 			break
 		}
@@ -1201,16 +1350,15 @@ func (p *Parser) parseExpressionList() []Expression {
 		}
 	}
 
-	return expressions
+	return expressions, nil
 }
 
-func (p *Parser) parseColumnList() []string {
+func (p *Parser) parseColumnList() ([]string, error) {
 	var columns []string
 
 	for {
 		if p.current.Type != IDENT {
-			p.addError("expected column name")
-			break
+			return nil, fmt.Errorf("expected column name")
 		}
 
 		columns = append(columns, p.current.Literal)
@@ -1223,7 +1371,7 @@ func (p *Parser) parseColumnList() []string {
 		}
 	}
 
-	return columns
+	return columns, nil
 }
 
 func (p *Parser) isJoinKeyword(tokenType TokenType) bool {
@@ -1231,37 +1379,18 @@ func (p *Parser) isJoinKeyword(tokenType TokenType) bool {
 		tokenType == RIGHT || tokenType == FULL
 }
 
-// GetErrors returns the list of parse errors
-func (p *Parser) GetErrors() []string {
-	return p.errors
-}
-
-// HasErrors checks if there are any parse errors
-func (p *Parser) HasErrors() bool {
-	return len(p.errors) > 0
-}
-
 // Reset resets the parser state
 func (p *Parser) Reset(input string) {
 	p.lexer = NewAdvancedLexer(input)
-	p.errors = []string{}
 	p.nextToken()
 }
 
 // ParseExpression parses a single expression (useful for WHERE clauses, etc.)
 func (p *Parser) ParseExpression() (Expression, error) {
-	expr := p.parseExpression()
-	if len(p.errors) > 0 {
-		return nil, fmt.Errorf("parse errors: %s", strings.Join(p.errors, "; "))
-	}
-	return expr, nil
+	return p.parseExpression()
 }
 
 // ParseStatement parses a single statement
 func (p *Parser) ParseStatement() (Statement, error) {
-	stmt := p.parseStatement()
-	if len(p.errors) > 0 {
-		return nil, fmt.Errorf("parse errors: %s", strings.Join(p.errors, "; "))
-	}
-	return stmt, nil
+	return p.parseStatement()
 }
